@@ -1,0 +1,11 @@
+{
+  "version": "1.0",
+  "apis": [
+    {
+      "identifier": "unmarshal-docs",
+      "source": "@unmarshal-docs/v1.0#6fk9hm0eynm5w",
+      "integrity": "sha512-mW2D/WjtDVeZsiH+UCuBwv+uLX5h9RARTKnXNF73ImZTVOlsN1NPvbDbMDw7GDVWfw3koQKb9gGefhIl5K/1iA==",
+      "installerVersion": "6.1.2"
+    }
+  ]
+}
