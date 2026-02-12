@@ -17,19 +17,24 @@ const AppError = require('./utils/appError');
 
 const app = express();
 
-// Allow Cross-Origin requests
-// app.use(cors({
-//     origin: ['*'],
-//     methods: ['GET','POST','DELETE','UPDATE','PUT','PATCH']
-// }));
-app.use(cors());
-//app.use(cors({
-//    origin: ['https://', 'https://www.', 'http://', 'http://'],
-//    methods: ['GET','POST','DELETE','UPDATE','PUT','PATCH']
-//}));
+// CORS configuration - must be before other middleware
+app.use(cors({
+    origin: '*', // Allow all origins for development/production
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+    credentials: false,
+    preflightContinue: false,
+    optionsSuccessStatus: 204
+}));
 
-// Set security HTTP headers
-app.use(helmet());
+// Handle preflight requests explicitly
+app.options('*', cors());
+
+// Set security HTTP headers (configured to work with CORS)
+app.use(helmet({
+    crossOriginResourcePolicy: { policy: "cross-origin" },
+    crossOriginEmbedderPolicy: false
+}));
 
 // Limit request from the same API 
 const limiter = rateLimit({
