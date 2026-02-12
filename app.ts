@@ -66,7 +66,10 @@ app.use('/upload', uploadRoutes);
 app.use('/qrcode', qrcodeRoutes);
 app.use('/user', userRoutes);
 
-app.use('/files', express.static('uploads'));
+// Serve uploaded files - use absolute path
+const path = require('path');
+const uploadsPath = path.join(__dirname, 'uploads');
+app.use('/files', express.static(uploadsPath));
 
 //handle undefined Routes
 app.use('*', (req: any, res: any, next: any) => {

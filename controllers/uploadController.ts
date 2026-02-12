@@ -7,34 +7,51 @@ exports.index = (req: any, res: any) => {
 
 exports.uploadSingle = (req: any, res: any, next: any) => {
     try {
-        if (req.file) {
-            console.log(req.file)
-            res.status(200).json({
-                status: 'success',
-                url: req.file.filename
+        if (!req.file) {
+            return res.status(400).json({
+                status: 'error',
+                message: 'No file uploaded'
             });
         }
+        
+        console.log('File uploaded successfully:', req.file.filename);
+        res.status(200).json({
+            status: 'success',
+            url: req.file.filename,
+            path: `/files/${req.file.filename}`
+        });
     } catch (error) {
+        console.error('Upload error:', error);
         next(error);
     }
 }
 
 exports.uploadMultiple = (req: any, res: any, next: any) => {
     try {
-        if (req.files.length) {
-            let images = [];
-            for(let i = 0; i < req.files.length ; ++ i) {
-                images.push(req.files[i].filename);
-            }
-            res.status(200).json({
-                status: 'success',
-                files: images
+        if (!req.files || req.files.length === 0) {
+            return res.status(400).json({
+                status: 'error',
+                message: 'No files uploaded'
             });
         }
+        
+        let images = [];
+        for(let i = 0; i < req.files.length ; ++ i) {
+            images.push({
+                filename: req.files[i].filename,
+                path: `/files/${req.files[i].filename}`
+            });
+        }
+        
+        console.log('Multiple files uploaded successfully:', images.length);
+        res.status(200).json({
+            status: 'success',
+            files: images
+        });
     } catch (err) {
+        console.error('Multiple upload error:', err);
         next(err);
     }
-    // return res.redirect('/');
 }
 
 exports.uploadSingleV2 = async (req: any, res: any) => {

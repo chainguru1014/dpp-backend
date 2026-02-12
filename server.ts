@@ -12,6 +12,15 @@ process.on('uncaughtException', err => {
 
 const app = require('./app');
 
+// Ensure uploads directory exists on startup
+const fs = require('fs');
+const path = require('path');
+const uploadsDir = path.join(__dirname, 'uploads');
+if (!fs.existsSync(uploadsDir)) {
+    fs.mkdirSync(uploadsDir, { recursive: true });
+    console.log('Created uploads directory:', uploadsDir);
+}
+
 
 mongoose.connect(process.env.DATABASE,
     (err: any) => {
