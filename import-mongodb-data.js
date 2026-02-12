@@ -7,8 +7,8 @@ const fs = require('fs');
 const path = require('path');
 
 // MongoDB connection string - adjust if needed
-// Use 127.0.0.1 instead of localhost to force IPv4
-const MONGODB_URI = process.env.DATABASE || 'mongodb://127.0.0.1:27017/4dveritasG';
+// Uses DATABASE from .env file, falls back to local if not set
+const MONGODB_URI = process.env.DATABASE || 'mongodb://admin:admin@82.165.217.122:27017/4dveritasG?authSource=admin';
 
 // Collection mappings - adjust paths as needed
 const collections = [
