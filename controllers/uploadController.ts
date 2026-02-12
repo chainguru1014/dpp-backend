@@ -37,10 +37,8 @@ exports.uploadMultiple = (req: any, res: any, next: any) => {
         
         let images = [];
         for(let i = 0; i < req.files.length ; ++ i) {
-            images.push({
-                filename: req.files[i].filename,
-                path: `/files/${req.files[i].filename}`
-            });
+            // Return just the filename for frontend compatibility
+            images.push(req.files[i].filename);
         }
         
         console.log('Multiple files uploaded successfully:', images.length);
