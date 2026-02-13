@@ -5,6 +5,8 @@ const mongoSanitize = require('express-mongo-sanitize');
 const xss = require('xss-clean');
 const hpp = require('hpp');
 const cors = require('cors');
+const fs = require('fs');
+const fetch = require('node-fetch');
 const router = express.Router();
 
 const companyRoutes = require('./routes/companyRoutes');
@@ -69,6 +71,37 @@ app.use('/user', userRoutes);
 // Serve uploaded files - use absolute path
 const path = require('path');
 const uploadsPath = path.join(__dirname, 'uploads');
+const remoteFilesBaseUrl = process.env.REMOTE_FILES_BASE_URL || 'http://82.165.217.122:5052/files';
+
+// File fallback: if local upload is missing, proxy it from the VPS file host.
+app.get('/files/:filename', async (req: any, res: any, next: any) => {
+    try {
+        const safeFilename = path.basename(req.params.filename || '');
+        const localFilePath = path.join(uploadsPath, safeFilename);
+
+        if (fs.existsSync(localFilePath)) {
+            return res.sendFile(localFilePath);
+        }
+
+        const remoteUrl = `${remoteFilesBaseUrl}/${encodeURIComponent(safeFilename)}`;
+        const remoteResponse = await fetch(remoteUrl);
+
+        if (!remoteResponse.ok) {
+            return res.status(404).json({
+                status: 'fail',
+                message: 'File not found'
+            });
+        }
+
+        const contentType = remoteResponse.headers.get('content-type') || 'application/octet-stream';
+        const fileBuffer = await remoteResponse.buffer();
+        res.setHeader('Content-Type', contentType);
+        return res.send(fileBuffer);
+    } catch (error) {
+        return next(error);
+    }
+});
+
 app.use('/files', express.static(uploadsPath));
 
 //handle undefined Routes

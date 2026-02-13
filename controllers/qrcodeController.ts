@@ -9,6 +9,71 @@ const qrcode = require('qrcode');
 
 const divcount = 20000;
 
+const toStringArray = (value: any): string[] => {
+    if (value == null) {
+        return [];
+    }
+
+    if (Array.isArray(value)) {
+        return value.flatMap((item: any) => toStringArray(item));
+    }
+
+    if (typeof value === 'string') {
+        const trimmed = value.trim();
+        return trimmed ? [trimmed] : [];
+    }
+
+    if (typeof value === 'object') {
+        return Object.values(value).flatMap((item: any) => toStringArray(item));
+    }
+
+    return [];
+};
+
+const toArray = (value: any): any[] => {
+    if (value == null) {
+        return [];
+    }
+    if (Array.isArray(value)) {
+        return value;
+    }
+    if (typeof value === 'object') {
+        return Object.values(value);
+    }
+    return [value];
+};
+
+const normalizeProductMedia = (productDoc: any) => {
+    if (!productDoc || typeof productDoc !== 'object') {
+        return productDoc;
+    }
+
+    const normalized = { ...productDoc };
+    normalized.images = toStringArray(productDoc.images);
+    normalized.files = toStringArray(productDoc.files);
+    normalized.videos = toArray(productDoc.videos);
+
+    if (productDoc.warrantyAndGuarantee && typeof productDoc.warrantyAndGuarantee === 'object') {
+        normalized.warrantyAndGuarantee = {
+            ...productDoc.warrantyAndGuarantee,
+            images: toStringArray(productDoc.warrantyAndGuarantee.images),
+            files: toStringArray(productDoc.warrantyAndGuarantee.files),
+            videos: toArray(productDoc.warrantyAndGuarantee.videos)
+        };
+    }
+
+    if (productDoc.manualsAndCerts && typeof productDoc.manualsAndCerts === 'object') {
+        normalized.manualsAndCerts = {
+            ...productDoc.manualsAndCerts,
+            images: toStringArray(productDoc.manualsAndCerts.images),
+            files: toStringArray(productDoc.manualsAndCerts.files),
+            videos: toArray(productDoc.manualsAndCerts.videos)
+        };
+    }
+
+    return normalized;
+};
+
 exports.getAllQRcodes = base.getAll(QRcode);
 exports.getQRcode = base.getOne(QRcode);
 
@@ -78,13 +143,14 @@ exports.decrypt = async (req: any, res: any, next: any) => {
 
             const product = await Product.findById(data.product_id);
             const serials = await Serials.find({product_id:data.product_id,qrcode_id:data.token_id});
+            const normalizedProduct = normalizeProductMedia(product?._doc || {});
 
             const qrcodeImage = await qrcode.toDataURL(req.body.encryptData);
 
             const resData = {
                 token_id: data.token_id,
                 location: qrcodeData.company_id.location,
-                ...product._doc,
+                ...normalizedProduct,
                 qrcode_img: qrcodeImage,
                 serialInfos:serials
             };
@@ -126,6 +192,7 @@ exports.getProductInfoWithQRCodeID = async (req: any, res: any, next: any) => {
         if(data.product_id) {
             const product = await Product.findById(data.product_id);
             const serials = await Serials.find({product_id:data.product_id,qrcode_id:data.qrcode_id});
+            const normalizedProduct = normalizeProductMedia(product?._doc || {});
 
             const stringdata = JSON.stringify({
                 product_id: product._id,
@@ -137,7 +204,7 @@ exports.getProductInfoWithQRCodeID = async (req: any, res: any, next: any) => {
             const resData = {
                 token_id: data.qrcode_id,
                 location: data.company_id.location,
-                ...product._doc,
+                ...normalizedProduct,
                 serialInfos:serials,
                 qrcode_img: qrcodeImage,
                 company:data.company_id
@@ -163,6 +230,7 @@ exports.getProductInfoWithSerial = async(req:any, res:any, next:any) => {
             const product = await Product.findById(serialInfo.product_id);
             console.log(product);
             const serials = await Serials.find({product_id:serialInfo.product_id,qrcode_id:serialInfo.qrcode_id});
+            const normalizedProduct = normalizeProductMedia(product?._doc || {});
             const stringdata = JSON.stringify({
                 product_id: product._id,
                 token_id: serialInfo.qrcode_id
@@ -173,7 +241,7 @@ exports.getProductInfoWithSerial = async(req:any, res:any, next:any) => {
             const resData = {
                 token_id: serialInfo.qrcode_id,
                 location: serialInfo.company_id.location,
-                ...product._doc,
+                ...normalizedProduct,
                 serialInfos:serials,
                 qrcode_img: qrcodeImage,
                 company:serialInfo.company_id
