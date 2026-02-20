@@ -16,7 +16,38 @@ const delay = (ms : any) => new Promise(resolve => setTimeout(resolve, ms))
 
 exports.getAllProducts = async(req: any, res: any, next: any) => {
     try {
-        const doc = await Product.find({...req.body, is_deleted: false});
+        const mongoose = require('mongoose');
+        const filter: any = { is_deleted: false };
+        
+        // Handle company_id filter - convert string to ObjectId if needed
+        if (req.body.company_id) {
+            try {
+                // Try to convert to ObjectId if it's a string
+                const companyIdStr = String(req.body.company_id);
+                if (mongoose.Types.ObjectId.isValid(companyIdStr)) {
+                    filter.company_id = mongoose.Types.ObjectId(companyIdStr);
+                } else {
+                    filter.company_id = req.body.company_id;
+                }
+            } catch (e) {
+                console.error('Error converting company_id to ObjectId:', e);
+                filter.company_id = req.body.company_id;
+            }
+        }
+        
+        // Add any other filters from req.body
+        Object.keys(req.body).forEach(key => {
+            if (key !== 'company_id') {
+                filter[key] = req.body[key];
+            }
+        });
+        
+        console.log('getAllProducts filter:', JSON.stringify(filter, null, 2));
+        const doc = await Product.find(filter).populate('company_id');
+        console.log('getAllProducts found:', doc.length, 'products');
+        if (doc.length > 0) {
+            console.log('Sample product company_id:', doc[0].company_id);
+        }
         
         res.status(200).json({
             status: 'success',
@@ -27,6 +58,7 @@ exports.getAllProducts = async(req: any, res: any, next: any) => {
         });
         
     } catch (error) {
+        console.error('getAllProducts error:', error);
         next(error);
     }
 

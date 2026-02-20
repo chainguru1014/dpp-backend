@@ -1,4 +1,5 @@
 const QRcode = require('../models/qrcodeModel');
+const SecurityQRCode = require('../models/securityQRCodeModel');
 const Serials = require('../models/serialModal')
 const Product = require('../models/productModel');
 const Company = require('../models/companyModel');
@@ -311,3 +312,151 @@ exports.getSerials = async(req:any, res:any, next:any) => {
     }
 
 }
+
+// Generate Security QR Codes (independent from regular QR codes)
+exports.generateSecurityQRCodes = async (req: any, res: any, next: any) => {
+    try {
+        const { product_id, amount, company_id } = req.body;
+        
+        if (!product_id || !amount || !company_id) {
+            return res.status(400).json({
+                status: 'fail',
+                message: 'product_id, amount, and company_id are required'
+            });
+        }
+
+        const product = await Product.findById(product_id);
+        if (!product) {
+            return res.status(404).json({
+                status: 'fail',
+                message: 'Product not found'
+            });
+        }
+
+        // Get current max security_qrcode_id for this product
+        const maxSecurityQR = await SecurityQRCode.findOne({ product_id })
+            .sort({ security_qrcode_id: -1 })
+            .limit(1);
+        
+        let startId = maxSecurityQR ? maxSecurityQR.security_qrcode_id + 1 : 1;
+        const encryptedKeys = [];
+
+        // Generate security QR codes
+        for (let i = 0; i < amount; i++) {
+            const security_qrcode_id = startId + i;
+            const stringdata = JSON.stringify({
+                product_id: product._id,
+                security_token_id: security_qrcode_id
+            });
+            const encryptData = encrypt(stringdata);
+
+            // Save to database
+            await SecurityQRCode.create({
+                product_id: product._id,
+                company_id: company_id,
+                security_qrcode_id: security_qrcode_id,
+                encrypted_key: encryptData
+            });
+
+            encryptedKeys.push(encryptData);
+        }
+
+        // @ts-ignore
+        global.io.emit('Refresh product data');
+
+        res.status(200).json({
+            status: 'success',
+            data: encryptedKeys
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+// Get Security QR Codes for a product
+exports.getSecurityQRCodes = async (req: any, res: any, next: any) => {
+    try {
+        const { product_id, page = 1 } = req.body;
+        
+        if (!product_id) {
+            return res.status(400).json({
+                status: 'fail',
+                message: 'product_id is required'
+            });
+        }
+
+        const securityQRCodes = await SecurityQRCode.find({ product_id })
+            .sort({ security_qrcode_id: 1 })
+            .skip((page - 1) * 100)
+            .limit(100);
+
+        const encryptedKeys = securityQRCodes.map((sqrc: any) => sqrc.encrypted_key);
+        const totalCount = await SecurityQRCode.countDocuments({ product_id });
+
+        res.status(200).json({
+            status: 'success',
+            data: encryptedKeys,
+            total: totalCount,
+            page: page
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+// Get product info by encrypted key for web page (public endpoint)
+exports.getProductByKey = async (req: any, res: any, next: any) => {
+    try {
+        const { key } = req.params;
+        
+        if (!key) {
+            return res.status(400).json({
+                status: 'fail',
+                message: 'Product key is required'
+            });
+        }
+
+        // Decrypt the key to get product_id and token_id
+        const data = JSON.parse(decrypt(key));
+        
+        if (!data.product_id) {
+            return res.status(404).json({
+                status: 'fail',
+                message: 'Invalid product key'
+            });
+        }
+
+        const product = await Product.findById(data.product_id).populate('company_id');
+        if (!product) {
+            return res.status(404).json({
+                status: 'fail',
+                message: 'Product not found'
+            });
+        }
+
+        const normalizedProduct = normalizeProductMedia(product._doc || {});
+        
+        // Return only the data needed for the public web page
+        const webProductData = {
+            name: normalizedProduct.name || '',
+            model: normalizedProduct.model || '',
+            detail: normalizedProduct.detail || '',
+            images: normalizedProduct.images || [],
+            company_id: product.company_id ? {
+                name: product.company_id.name || '',
+                _id: product.company_id._id
+            } : null
+        };
+
+        res.status(200).json({
+            status: 'success',
+            data: webProductData
+        });
+    } catch (error) {
+        console.error('Error in getProductByKey:', error);
+        res.status(400).json({
+            status: 'fail',
+            message: 'Invalid product key or error processing request'
+        });
+    }
+};

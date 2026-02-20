@@ -10,11 +10,16 @@ router.post('/product', QRcodeController.getQRcodesWithProductId);
 router.post('/decrypt', QRcodeController.decrypt);
 router.post('/serialdata/productinfo',QRcodeController.getProductInfoWithSerial);
 router.post('/serials',QRcodeController.getSerials)
+router.get('/product/:key', QRcodeController.getProductByKey); // Public web endpoint
 router.get('/:id', QRcodeController.getQRcode);
 router.post('/', QRcodeController.addQRcode);
 router.put('/:id', QRcodeController.updateQRcode);
 router.delete('/:id', QRcodeController.deleteQRcode);
 router.get('/:id/productinfo', QRcodeController.getProductInfoWithQRCodeID);
+
+// Security QR Code routes
+router.post('/security/generate', QRcodeController.generateSecurityQRCodes);
+router.post('/security/product', QRcodeController.getSecurityQRCodes);
 
 
 
