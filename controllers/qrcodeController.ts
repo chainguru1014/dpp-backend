@@ -442,6 +442,10 @@ exports.getProductByKey = async (req: any, res: any, next: any) => {
             model: normalizedProduct.model || '',
             detail: normalizedProduct.detail || '',
             images: normalizedProduct.images || [],
+            company: product.company_id ? {
+                name: product.company_id.name || '',
+                _id: product.company_id._id
+            } : null,
             company_id: product.company_id ? {
                 name: product.company_id.name || '',
                 _id: product.company_id._id
