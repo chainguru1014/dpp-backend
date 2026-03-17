@@ -8,7 +8,7 @@ const userSchema = new mongoose.Schema({
     },
     password: {
         type: String,
-        require: true
+        required: false  // Not required for Google OAuth users
     },
     role: {
         type: String,
@@ -17,12 +17,12 @@ const userSchema = new mongoose.Schema({
     },
     name: {
         type: String,
-        require: true
+        required: true
     },
     email: {
         type: String,
         unique: true,
-        require: true
+        required: true
     },
     avatar: {
         type: String,
@@ -39,6 +39,46 @@ const userSchema = new mongoose.Schema({
     },
     company_detail: {
         type: String
+    },
+    // New fields for user type and profile
+    userType: {
+        type: String,
+        enum: ['client', 'agent'],
+        default: 'client'
+    },
+    gender: {
+        type: String,
+        enum: ['male', 'female', 'other']
+    },
+    age: {
+        type: Number
+    },
+    country: {
+        type: String
+    },
+    firstName: {
+        type: String
+    },
+    lastName: {
+        type: String
+    },
+    dateOfBirth: {
+        type: String
+    },
+    address: {
+        type: String
+    },
+    googleId: {
+        type: String,
+        sparse: true
+    },
+    isGoogleUser: {
+        type: Boolean,
+        default: false
+    },
+    profileCompleted: {
+        type: Boolean,
+        default: false
     }
 });
 

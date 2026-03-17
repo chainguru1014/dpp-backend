@@ -5,6 +5,8 @@ const UserController = require('../controllers/userController');
 // Mobile app authentication routes
 router.post('/login', UserController.login);
 router.post('/register', UserController.register);
+router.post('/google-login', UserController.googleLogin);
+router.post('/complete-google-profile', UserController.completeGoogleProfile);
 
 // In a real application you would protect these routes with authentication
 // and verify that the requester has admin privileges.
