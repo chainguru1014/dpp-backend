@@ -53,8 +53,29 @@ function encrypt(text: any) {
 }
 
 function decrypt(encrypted: any) {
+    if (typeof encrypted !== 'string') {
+        throw new Error('Invalid encrypted payload');
+    }
+
+    // Normalize scanned/enqueued base64 so decrypt works for raw, URL-encoded, and URL-safe values.
+    let normalized = encrypted.trim();
+    try {
+        normalized = decodeURIComponent(normalized);
+    } catch (error) {
+        // Keep original value when payload is not URL encoded.
+    }
+    normalized = normalized
+        .replace(/\s/g, '+')
+        .replace(/-/g, '+')
+        .replace(/_/g, '/');
+
+    const padding = normalized.length % 4;
+    if (padding) {
+        normalized += '='.repeat(4 - padding);
+    }
+
     let decipher = crypto.createDecipheriv(process.env.ENCRYPT_ALGORITHM, process.env.AES_KEY, process.env.AES_IV);
-    let decrypted = decipher.update(encrypted, 'base64', 'utf8');
+    let decrypted = decipher.update(normalized, 'base64', 'utf8');
     decrypted += decipher.final('utf8');
     return decrypted;
 }

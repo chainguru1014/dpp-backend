@@ -34,7 +34,8 @@ mongoose.connection.on('error', (error: any) => {
     console.log(error);
 });
 // Start the server
-const port = process.env.PORT || 8080;
+// Hosting providers typically inject PORT; for local dev default to 5052 to avoid common clashes.
+const port = process.env.PORT || 5052;
 const server = app.listen(port, "0.0.0.0", () => {
     console.log(`Application is running on port ${port}`);
 });
@@ -66,7 +67,7 @@ socketIo.on('connection', (socket: any) => {
 process.on('unhandledRejection', (err: any) => {
     console.log('UNHANDLED REJECTION!!!  shutting down ...');
     console.log(err.name, err.message);
-    app.close(() => {
+    server.close(() => {
         process.exit(1);
     });
 });

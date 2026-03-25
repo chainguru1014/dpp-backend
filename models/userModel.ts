@@ -22,7 +22,8 @@ const userSchema = new mongoose.Schema({
     email: {
         type: String,
         unique: true,
-        required: true
+        sparse: true,
+        required: false
     },
     avatar: {
         type: String,
@@ -66,6 +67,24 @@ const userSchema = new mongoose.Schema({
         type: String
     },
     address: {
+        type: String
+    },
+    addressStreet: {
+        type: String
+    },
+    addressCity: {
+        type: String
+    },
+    addressState: {
+        type: String
+    },
+    addressZipCode: {
+        type: String
+    },
+    addressCountry: {
+        type: String
+    },
+    phoneNumber: {
         type: String
     },
     googleId: {

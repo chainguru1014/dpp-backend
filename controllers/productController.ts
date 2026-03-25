@@ -188,11 +188,16 @@ async function mintChildProduct(product_id:string,qrcode_id:number) {
         const products = await Product.find({parent:product_id})
 
         for(const product of products) {
+            const companyId = product?.company_id?._id || product?.company_id;
+            // Skip orphaned products that are missing a company reference.
+            if (!companyId) {
+                continue;
+            }
             let start = new Date();
             for(let j = 1;j<=product.parentCount;j++) {
                 await QRcode.create({
                     product_id: product._id,
-                    company_id: product.company_id._id,
+                    company_id: companyId,
                     qrcode_id: product.total_minted_amount + j,
                     parent_qrcode_id:qrcode_id
                 })
@@ -203,7 +208,7 @@ async function mintChildProduct(product_id:string,qrcode_id:number) {
                         serial:uuidv4(),
                         qrcode_id:product.total_minted_amount + j,
                         product_id:product._id,
-                        company_id: product.company_id._id,
+                        company_id: companyId,
                         parent_qrcode_id:qrcode_id
                     })
                 }
@@ -228,17 +233,29 @@ async function mintChildProduct(product_id:string,qrcode_id:number) {
 
 exports.mint = async(req: any, res: any, next: any) => {
     try {
-        const product = await Product.findById(req.params.id).populate('company_id');
+        const product = await Product.findById(req.params.id);
 
         console.log(product);
         let start = new Date();
 
-        const mintAmount = req.body.amount;
+        if (!product) {
+            return next(new AppError(404, 'fail', 'Product not found'), req, res, next);
+        }
+
+        const companyId = product.company_id?._id || product.company_id;
+        if (!companyId) {
+            return next(new AppError(400, 'fail', 'Product has no company assigned'), req, res, next);
+        }
+
+        const mintAmount = Number(req.body.amount);
+        if (!Number.isInteger(mintAmount) || mintAmount <= 0) {
+            return next(new AppError(400, 'fail', 'amount must be a positive integer'), req, res, next);
+        }
 
         for (let j = 1; j <= mintAmount; j ++ ) {
             await QRcode.create({
                 product_id: product._id,
-                company_id: product.company_id._id,
+                company_id: companyId,
                 qrcode_id: product.total_minted_amount + j
             })
 
@@ -248,7 +265,7 @@ exports.mint = async(req: any, res: any, next: any) => {
                     serial:uuidv4(),
                     qrcode_id:product.total_minted_amount + j,
                     product_id:product._id,
-                    company_id: product.company_id._id,
+                    company_id: companyId,
                 })
             }
 

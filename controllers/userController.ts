@@ -3,6 +3,43 @@ const Company = require('../models/companyModel');
 const AppError = require('../utils/appError');
 const jwt = require('jsonwebtoken');
 
+const normalizeUsername = (value: any) => (typeof value === 'string' ? value.trim() : '');
+
+const findExistingNormalUserByName = async (name: string) => {
+    if (!name) {
+        return null;
+    }
+    return User.findOne({
+        role: 'User',
+        userType: { $in: ['client', 'agent'] },
+        name: { $regex: `^${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, $options: 'i' }
+    });
+};
+
+const buildUserResponse = (user: any) => ({
+    _id: user._id,
+    name: user.name,
+    email: user.email,
+    avatar: user.avatar,
+    role: user.role,
+    wallet: user.wallet,
+    userType: user.userType,
+    gender: user.gender,
+    age: user.age,
+    country: user.country,
+    firstName: user.firstName,
+    lastName: user.lastName,
+    dateOfBirth: user.dateOfBirth,
+    address: user.address,
+    addressStreet: user.addressStreet,
+    addressCity: user.addressCity,
+    addressState: user.addressState,
+    addressZipCode: user.addressZipCode,
+    addressCountry: user.addressCountry,
+    phoneNumber: user.phoneNumber,
+    profileCompleted: user.profileCompleted
+});
+
 /**
  * Admin-only endpoint that returns all users and companies.
  * Supports optional status filter: 'approved' | 'waiting'.
@@ -126,15 +163,7 @@ exports.login = async (req: any, res: any, next: any) => {
             { expiresIn: process.env.JWT_EXPIRES_IN || '1d' }
         );
 
-        // Remove sensitive data
-        const userData = {
-            _id: user._id,
-            name: user.name,
-            email: user.email,
-            avatar: user.avatar,
-            role: user.role,
-            wallet: user.wallet
-        };
+        const userData = buildUserResponse(user);
 
         res.status(200).json({
             status: 'success',
@@ -146,22 +175,98 @@ exports.login = async (req: any, res: any, next: any) => {
     }
 };
 
-// Mobile app register endpoint - uses User table
-exports.register = async (req: any, res: any, next: any) => {
+exports.checkUsername = async (req: any, res: any, next: any) => {
     try {
-        const { name, email, password, userType } = req.body;
+        const name = normalizeUsername(req.body?.name);
 
-        if (!name || !email || !password) {
+        if (!name) {
             return res.status(400).json({
                 status: 'fail',
-                message: 'Please provide name, email, and password'
+                message: 'Please provide username'
             });
         }
 
-        // Check if user already exists in User collection
-        const existingUser = await User.findOne({ 
-            $or: [{ name }, { email }] 
+        const existingUser = await findExistingNormalUserByName(name);
+        return res.status(200).json({
+            status: 'success',
+            exists: !!existingUser
         });
+    } catch (error) {
+        next(error);
+    }
+};
+
+// Mobile app register endpoint - uses User table
+exports.register = async (req: any, res: any, next: any) => {
+    try {
+        const {
+            name,
+            email,
+            password,
+            userType = 'client',
+            gender,
+            age,
+            country,
+            firstName,
+            lastName,
+            addressStreet,
+            addressCity,
+            addressState,
+            addressZipCode,
+            addressCountry,
+            phoneNumber,
+            dateOfBirth
+        } = req.body;
+
+        const normalizedName = normalizeUsername(name);
+
+        if (!normalizedName || !password) {
+            return res.status(400).json({
+                status: 'fail',
+                message: 'Please provide username and password'
+            });
+        }
+
+        if (userType === 'client') {
+            if (!gender || !age || !country) {
+                return res.status(400).json({
+                    status: 'fail',
+                    message: 'Client requires gender, age, and country'
+                });
+            }
+        } else if (userType === 'agent') {
+            if (!email || !firstName || !lastName || !addressStreet || !addressCity || !addressState || !addressZipCode || !addressCountry || !phoneNumber || !gender || !dateOfBirth) {
+                return res.status(400).json({
+                    status: 'fail',
+                    message: 'Agent requires email, first name, last name, street, city, state, zip code, country, phone number, gender, and date of birth'
+                });
+            }
+        } else {
+            return res.status(400).json({
+                status: 'fail',
+                message: 'Invalid user type'
+            });
+        }
+
+        const existingUserByName = await findExistingNormalUserByName(normalizedName);
+        if (existingUserByName) {
+            return res.status(400).json({
+                status: 'fail',
+                message: 'User with this name or email already exists'
+            });
+        }
+
+        const duplicateQuery: any[] = [];
+        if (email) {
+            duplicateQuery.push({ email });
+        }
+
+        const existingUser = duplicateQuery.length
+            ? await User.findOne({
+                role: 'User',
+                $or: duplicateQuery
+            })
+            : null;
 
         if (existingUser) {
             return res.status(400).json({
@@ -172,13 +277,26 @@ exports.register = async (req: any, res: any, next: any) => {
 
         // Create new user in User collection (for mobile app)
         const newUser = await User.create({
-            name,
+            name: normalizedName,
             email,
             password,
-            userType: userType || 'client',
-            role: 'User',  // Default role for mobile app users
+            userType,
+            gender,
+            age,
+            country,
+            firstName,
+            lastName,
+            addressStreet,
+            addressCity,
+            addressState,
+            addressZipCode,
+            addressCountry,
+            address: `${addressStreet}, ${addressCity}, ${addressState}, ${addressZipCode}, ${addressCountry}`,
+            phoneNumber,
+            dateOfBirth,
+            role: 'User',
             isApproved: false,
-            profileCompleted: false
+            profileCompleted: true
         });
 
         // Generate JWT token
@@ -188,16 +306,7 @@ exports.register = async (req: any, res: any, next: any) => {
             { expiresIn: process.env.JWT_EXPIRES_IN || '1d' }
         );
 
-        // Remove sensitive data
-        const userData = {
-            _id: newUser._id,
-            name: newUser.name,
-            email: newUser.email,
-            avatar: newUser.avatar,
-            role: newUser.role,
-            wallet: newUser.wallet,
-            userType: newUser.userType
-        };
+        const userData = buildUserResponse(newUser);
 
         res.status(201).json({
             status: 'success',
@@ -256,7 +365,7 @@ exports.googleLogin = async (req: any, res: any, next: any) => {
                 role: 'User',
                 isApproved: false,
                 profileCompleted: false,
-                password: '' // No password for Google users
+                password: 'google'
             });
         }
 
@@ -267,17 +376,7 @@ exports.googleLogin = async (req: any, res: any, next: any) => {
             { expiresIn: process.env.JWT_EXPIRES_IN || '1d' }
         );
 
-        // Remove sensitive data
-        const userData = {
-            _id: user._id,
-            name: user.name,
-            email: user.email,
-            avatar: user.avatar,
-            role: user.role,
-            wallet: user.wallet,
-            userType: user.userType,
-            profileCompleted: user.profileCompleted
-        };
+        const userData = buildUserResponse(user);
 
         res.status(200).json({
             status: 'success',
@@ -293,7 +392,7 @@ exports.googleLogin = async (req: any, res: any, next: any) => {
 // Complete Google profile endpoint
 exports.completeGoogleProfile = async (req: any, res: any, next: any) => {
     try {
-        const { userId, userType, username, gender, age, country, email, firstName, lastName, dateOfBirth, address } = req.body;
+        const { userId, userType, username, gender, age, country } = req.body;
 
         if (!userId) {
             return res.status(400).json({
@@ -311,34 +410,18 @@ exports.completeGoogleProfile = async (req: any, res: any, next: any) => {
             });
         }
 
-        // Update user profile based on user type
-        if (userType === 'client') {
-            if (!username || !gender || !age || !country) {
-                return res.status(400).json({
-                    status: 'fail',
-                    message: 'Please provide all required fields for client'
-                });
-            }
-            user.name = username;
-            user.gender = gender;
-            user.age = age;
-            user.country = country;
-        } else if (userType === 'agent') {
-            if (!email || !firstName || !lastName || !dateOfBirth || !address || !gender) {
-                return res.status(400).json({
-                    status: 'fail',
-                    message: 'Please provide all required fields for agent'
-                });
-            }
-            user.email = email;
-            user.firstName = firstName;
-            user.lastName = lastName;
-            user.dateOfBirth = dateOfBirth;
-            user.address = address;
-            user.gender = gender;
+        if (!username || !gender || !age || !country) {
+            return res.status(400).json({
+                status: 'fail',
+                message: 'Please provide username, gender, age, and country'
+            });
         }
 
-        user.userType = userType;
+        user.name = username;
+        user.userType = userType || 'client';
+        user.gender = gender;
+        user.age = age;
+        user.country = country;
         user.profileCompleted = true;
         await user.save();
 
@@ -349,23 +432,123 @@ exports.completeGoogleProfile = async (req: any, res: any, next: any) => {
             { expiresIn: process.env.JWT_EXPIRES_IN || '1d' }
         );
 
-        // Remove sensitive data
-        const userData = {
-            _id: user._id,
-            name: user.name,
-            email: user.email,
-            avatar: user.avatar,
-            role: user.role,
-            wallet: user.wallet,
-            userType: user.userType,
-            profileCompleted: user.profileCompleted
-        };
+        const userData = buildUserResponse(user);
 
         res.status(200).json({
             status: 'success',
             token,
             user: userData,
             message: 'Profile completed successfully'
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+// Update profile endpoint for mobile app profile edit page
+exports.updateProfile = async (req: any, res: any, next: any) => {
+    try {
+        const { userType } = req.body;
+        const updateData: any = {};
+
+        if (!userType || !['client', 'agent'].includes(userType)) {
+            return res.status(400).json({
+                status: 'fail',
+                message: 'Invalid user type'
+            });
+        }
+
+        if (userType === 'client') {
+            const { name, password, gender, age, country } = req.body;
+            if (!name || !password || !gender || !age || !country) {
+                return res.status(400).json({
+                    status: 'fail',
+                    message: 'Client requires username, password, gender, age, and country'
+                });
+            }
+            updateData.name = name;
+            updateData.password = password;
+            updateData.gender = gender;
+            updateData.age = age;
+            updateData.country = country;
+            updateData.firstName = undefined;
+            updateData.lastName = undefined;
+            updateData.address = undefined;
+            updateData.addressStreet = undefined;
+            updateData.addressCity = undefined;
+            updateData.addressState = undefined;
+            updateData.addressZipCode = undefined;
+            updateData.addressCountry = undefined;
+            updateData.phoneNumber = undefined;
+            updateData.dateOfBirth = undefined;
+        } else {
+            const {
+                name,
+                email,
+                firstName,
+                lastName,
+                addressStreet,
+                addressCity,
+                addressState,
+                addressZipCode,
+                addressCountry,
+                phoneNumber,
+                gender,
+                dateOfBirth,
+                password
+            } = req.body;
+            if (!name || !email || !firstName || !lastName || !addressStreet || !addressCity || !addressState || !addressZipCode || !addressCountry || !phoneNumber || !gender || !dateOfBirth) {
+                return res.status(400).json({
+                    status: 'fail',
+                    message: 'Agent requires username, email, first name, last name, street, city, state, zip code, country, phone number, gender, and date of birth'
+                });
+            }
+            updateData.name = name;
+            updateData.email = email;
+            updateData.firstName = firstName;
+            updateData.lastName = lastName;
+            updateData.addressStreet = addressStreet;
+            updateData.addressCity = addressCity;
+            updateData.addressState = addressState;
+            updateData.addressZipCode = addressZipCode;
+            updateData.addressCountry = addressCountry;
+            updateData.address = `${addressStreet}, ${addressCity}, ${addressState}, ${addressZipCode}, ${addressCountry}`;
+            updateData.phoneNumber = phoneNumber;
+            updateData.gender = gender;
+            updateData.dateOfBirth = dateOfBirth;
+            if (password) {
+                updateData.password = password;
+            }
+            updateData.age = undefined;
+            updateData.country = undefined;
+        }
+
+        updateData.userType = userType;
+        updateData.profileCompleted = true;
+
+        const user = await User.findByIdAndUpdate(req.params.id, updateData, {
+            new: true,
+            runValidators: true
+        });
+
+        if (!user) {
+            return res.status(404).json({
+                status: 'fail',
+                message: 'User not found'
+            });
+        }
+
+        const token = jwt.sign(
+            { id: user._id, name: user.name },
+            process.env.JWT_SECRET || 'default-secret',
+            { expiresIn: process.env.JWT_EXPIRES_IN || '1d' }
+        );
+
+        res.status(200).json({
+            status: 'success',
+            token,
+            user: buildUserResponse(user),
+            message: 'Profile updated successfully'
         });
     } catch (error) {
         next(error);

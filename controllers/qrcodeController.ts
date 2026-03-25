@@ -3,12 +3,83 @@ const SecurityQRCode = require('../models/securityQRCodeModel');
 const Serials = require('../models/serialModal')
 const Product = require('../models/productModel');
 const Company = require('../models/companyModel');
+const ScanRecord = require('../models/scanRecordModel');
 const base = require('./baseController');
 const APIFeatures = require('../utils/apiFeatures');
 const { encrypt, decrypt } = require('../utils/helper');
 const qrcode = require('qrcode');
+const mongoose = require('mongoose');
 
 const divcount = 20000;
+const PUBLIC_APP_URL = (process.env.PUBLIC_APP_URL || 'http://localhost:3001').replace(/\/+$/, '');
+
+const buildPublicProductUrl = (productId: any, qrCodeId: any) => {
+    return `${PUBLIC_APP_URL}/product/${encodeURIComponent(String(productId))}/${encodeURIComponent(String(qrCodeId))}`;
+};
+
+const extractProductFromQrUrl = (qrUrl: string) => {
+    if (!qrUrl || typeof qrUrl !== 'string') {
+        return null;
+    }
+
+    let normalizedUrl = String(qrUrl).trim();
+
+    // Support wrapped format:
+    //   http://localhost:3000?qrcode=https%3A%2F%2Fhost%2Fproduct%2F:id%2F:qrcodeId
+    const qrcodeParamIndex = normalizedUrl.indexOf('qrcode=');
+    if (qrcodeParamIndex >= 0) {
+        const encodedValue = normalizedUrl.substring(qrcodeParamIndex + 'qrcode='.length).split('&')[0];
+        try {
+            normalizedUrl = decodeURIComponent(encodedValue);
+        } catch (error) {
+            normalizedUrl = encodedValue;
+        }
+    }
+
+    const match = normalizedUrl.match(/\/product\/([^/?#]+)\/([^/?#]+)/i);
+    if (!match) {
+        return null;
+    }
+
+    const productId = decodeURIComponent(match[1]);
+    const qrcodeId = Number(decodeURIComponent(match[2]));
+    if (!productId || !Number.isFinite(qrcodeId)) {
+        return null;
+    }
+
+    return { productId, qrcodeId };
+};
+
+const getPublicProductPayload = async (productId: any, qrcodeId: any) => {
+    const numericQrId = Number(qrcodeId);
+    if (!Number.isFinite(numericQrId)) {
+        return null;
+    }
+
+    const qrcodeData = await QRcode.findOne({ product_id: productId, qrcode_id: numericQrId }).populate('company_id');
+    if (!qrcodeData) {
+        return null;
+    }
+
+    const product = await Product.findById(productId);
+    if (!product) {
+        return null;
+    }
+
+    const serials = await Serials.find({ product_id: productId, qrcode_id: numericQrId });
+    const normalizedProduct = normalizeProductMedia(product?._doc || {});
+    const scannedQRCode = buildPublicProductUrl(productId, numericQrId);
+    const qrcodeImage = await qrcode.toDataURL(scannedQRCode);
+
+    return {
+        token_id: numericQrId,
+        location: qrcodeData.company_id?.location || '',
+        ...normalizedProduct,
+        qrcode_img: qrcodeImage,
+        serialInfos: serials,
+        scannedQRCode
+    };
+};
 
 const toStringArray = (value: any): string[] => {
     if (value == null) {
@@ -95,12 +166,7 @@ exports.getQRcodesWithProductId = async(req: any, res: any, next: any) => {
             
             for (let i = req.body.from; i <= req.body.to; i ++) {
                 if (i > 0 && i <= product.total_minted_amount) {
-                    const stringdata = JSON.stringify({
-                        product_id: product._id,
-                        token_id: i
-                    });
-                    const encryptData = encrypt(stringdata);
-                    data.push(encryptData);
+                    data.push(buildPublicProductUrl(product._id, i));
                 }
             }
         } else if (req.body.page > 0) {
@@ -112,12 +178,7 @@ exports.getQRcodesWithProductId = async(req: any, res: any, next: any) => {
             }
             
             for (let i = 1; i <= count; i ++) {
-                const stringdata = JSON.stringify({
-                    product_id: product._id,
-                    token_id: (req.body.page - 1) * 100 + i
-                });
-                const encryptData = encrypt(stringdata);
-                data.push(encryptData);
+                data.push(buildPublicProductUrl(product._id, (req.body.page - 1) * 100 + i));
             }
         }
 
@@ -134,23 +195,64 @@ exports.getQRcodesWithProductId = async(req: any, res: any, next: any) => {
 
 exports.decrypt = async (req: any, res: any, next: any) => { 
     try {
+        if (!req.body || !req.body.encryptData) {
+            return res.status(400).json({
+                status: 'fail',
+                message: 'encryptData is required'
+            });
+        }
+
         console.log(req.body.encryptData);
-        const data = JSON.parse(decrypt(req.body.encryptData));
+        const rawValue = String(req.body.encryptData || '').trim();
+
+        // Backward-compatible support:
+        // If URL-format QR value is sent to /decrypt, resolve it as product QR URL.
+        const parsedFromUrl = extractProductFromQrUrl(rawValue);
+        if (parsedFromUrl) {
+            const payload = await getPublicProductPayload(parsedFromUrl.productId, parsedFromUrl.qrcodeId);
+            if (!payload) {
+                return res.status(404).json({
+                    status: 'fail',
+                    message: 'Product not found'
+                });
+            }
+
+            return res.status(200).json({
+                status: 'success',
+                data: payload,
+                type: 'Product'
+            });
+        }
+
+        const data = JSON.parse(decrypt(rawValue));
         console.log(data);
 
         if(data.product_id) {
             const qrcodeData = await QRcode.findOne({product_id: data.product_id, qrcode_id: data.token_id}).populate('company_id');
             console.log(qrcodeData);
 
+            if (!qrcodeData) {
+                return res.status(404).json({
+                    status: 'fail',
+                    message: 'QR code data not found'
+                });
+            }
+
             const product = await Product.findById(data.product_id);
+            if (!product) {
+                return res.status(404).json({
+                    status: 'fail',
+                    message: 'Product not found'
+                });
+            }
             const serials = await Serials.find({product_id:data.product_id,qrcode_id:data.token_id});
             const normalizedProduct = normalizeProductMedia(product?._doc || {});
 
-            const qrcodeImage = await qrcode.toDataURL(req.body.encryptData);
+            const qrcodeImage = await qrcode.toDataURL(buildPublicProductUrl(data.product_id, data.token_id));
 
             const resData = {
                 token_id: data.token_id,
-                location: qrcodeData.company_id.location,
+                location: qrcodeData.company_id?.location || '',
                 ...normalizedProduct,
                 qrcode_img: qrcodeImage,
                 serialInfos:serials
@@ -163,6 +265,12 @@ exports.decrypt = async (req: any, res: any, next: any) => {
             });
         } else if (data.user_id) {
             const company = await Company.findById(data.user_id);
+            if (!company) {
+                return res.status(404).json({
+                    status: 'fail',
+                    message: 'Company not found'
+                });
+            }
             company.privateKey = undefined;
             company.password = undefined;
             console.log(company);
@@ -179,7 +287,100 @@ exports.decrypt = async (req: any, res: any, next: any) => {
                 data: resData,
                 type: 'User'
             });
+        } else {
+            return res.status(400).json({
+                status: 'fail',
+                message: 'Invalid decrypted payload'
+            });
         }
+    } catch (error: any) {
+        const rawMessage = String(error?.message || '');
+        if (/pool destroyed|pool is closed|connection.+closed|topology.+closed/i.test(rawMessage)) {
+            return res.status(503).json({
+                status: 'error',
+                message: 'Database connection is temporarily unavailable. Please try again.'
+            });
+        }
+        next(error);
+    }
+};
+
+exports.recordScan = async (req: any, res: any, next: any) => {
+    try {
+        const { product_id, token_id, encryptData, user_id } = req.body || {};
+
+        if (!product_id || token_id == null || !encryptData) {
+            return res.status(400).json({
+                status: 'fail',
+                message: 'product_id, token_id and encryptData are required'
+            });
+        }
+
+        await ScanRecord.create({
+            product_id,
+            qrcode_id: Number(token_id),
+            encrypt_data: String(encryptData),
+            user_id: user_id || undefined,
+            scanned_at: new Date()
+        });
+
+        return res.status(201).json({
+            status: 'success'
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+exports.getScannedProducts = async (req: any, res: any, next: any) => {
+    try {
+        const { user_id } = req.query || {};
+        const matchStage: any = {};
+
+        if (user_id && mongoose.Types.ObjectId.isValid(String(user_id))) {
+            matchStage.user_id = new mongoose.Types.ObjectId(String(user_id));
+        }
+
+        const pipeline: any[] = [];
+        if (Object.keys(matchStage).length > 0) {
+            pipeline.push({ $match: matchStage });
+        }
+
+        pipeline.push(
+            { $sort: { scanned_at: -1 } },
+            {
+                $group: {
+                    _id: '$encrypt_data',
+                    latest: { $first: '$$ROOT' }
+                }
+            },
+            {
+                $lookup: {
+                    from: 'products',
+                    localField: 'latest.product_id',
+                    foreignField: '_id',
+                    as: 'product'
+                }
+            },
+            { $unwind: '$product' },
+            { $sort: { 'latest.scanned_at': -1 } }
+        );
+
+        const records = await ScanRecord.aggregate(pipeline);
+        const data = records.map((record: any) => {
+            const normalizedProduct = normalizeProductMedia(record.product || {});
+            return {
+                ...normalizedProduct,
+                token_id: record.latest?.qrcode_id,
+                scannedAt: new Date(record.latest?.scanned_at || Date.now()).getTime(),
+                scannedQRCode: record.latest?.encrypt_data || ''
+            };
+        });
+
+        return res.status(200).json({
+            status: 'success',
+            data
+        });
     } catch (error) {
         next(error);
     }
@@ -195,12 +396,7 @@ exports.getProductInfoWithQRCodeID = async (req: any, res: any, next: any) => {
             const serials = await Serials.find({product_id:data.product_id,qrcode_id:data.qrcode_id});
             const normalizedProduct = normalizeProductMedia(product?._doc || {});
 
-            const stringdata = JSON.stringify({
-                product_id: product._id,
-                token_id: data.qrcode_id
-            });
-            const encryptData = encrypt(stringdata);
-            const qrcodeImage = await qrcode.toDataURL('https://4dveritaspublic.com?qrcode=' + encryptData);
+            const qrcodeImage = await qrcode.toDataURL(buildPublicProductUrl(product._id, data.qrcode_id));
 
             const resData = {
                 token_id: data.qrcode_id,
@@ -232,12 +428,7 @@ exports.getProductInfoWithSerial = async(req:any, res:any, next:any) => {
             console.log(product);
             const serials = await Serials.find({product_id:serialInfo.product_id,qrcode_id:serialInfo.qrcode_id});
             const normalizedProduct = normalizeProductMedia(product?._doc || {});
-            const stringdata = JSON.stringify({
-                product_id: product._id,
-                token_id: serialInfo.qrcode_id
-            });
-            const encryptData = encrypt(stringdata);
-            const qrcodeImage = await qrcode.toDataURL('https://4dveritaspublic.com?qrcode=' + encryptData);
+            const qrcodeImage = await qrcode.toDataURL(buildPublicProductUrl(product._id, serialInfo.qrcode_id));
 
             const resData = {
                 token_id: serialInfo.qrcode_id,
@@ -462,5 +653,87 @@ exports.getProductByKey = async (req: any, res: any, next: any) => {
             status: 'fail',
             message: 'Invalid product key or error processing request'
         });
+    }
+};
+
+// Public product endpoint for URL-format QR codes: /product/:productId/:qrcodeId
+exports.getPublicProductByIds = async (req: any, res: any, next: any) => {
+    try {
+        const { productId, qrcodeId } = req.params;
+        if (!productId || qrcodeId == null) {
+            return res.status(400).json({
+                status: 'fail',
+                message: 'productId and qrcodeId are required'
+            });
+        }
+
+        const payload = await getPublicProductPayload(productId, qrcodeId);
+        if (!payload) {
+            return res.status(404).json({
+                status: 'fail',
+                message: 'Product not found'
+            });
+        }
+
+        return res.status(200).json({
+            status: 'success',
+            data: payload,
+            type: 'Product'
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+// Resolve QR URL to product payload and optionally verify it matches expected URL.
+exports.resolveProductByQrUrl = async (req: any, res: any, next: any) => {
+    try {
+        const qrUrl = String(req.body?.qrUrl || '').trim();
+        const expectedQrUrl = String(req.body?.expectedQrUrl || '').trim();
+
+        if (!qrUrl) {
+            return res.status(400).json({
+                status: 'fail',
+                message: 'qrUrl is required'
+            });
+        }
+
+        const parsed = extractProductFromQrUrl(qrUrl);
+        if (!parsed) {
+            return res.status(400).json({
+                status: 'fail',
+                message: 'Invalid product QR URL'
+            });
+        }
+
+        const payload = await getPublicProductPayload(parsed.productId, parsed.qrcodeId);
+        if (!payload) {
+            return res.status(404).json({
+                status: 'fail',
+                message: 'Product not found'
+            });
+        }
+
+        const scannedNormalizedUrl = buildPublicProductUrl(parsed.productId, parsed.qrcodeId);
+        let isSecurityCheckPassed = true;
+        if (expectedQrUrl) {
+            const expectedParsed = extractProductFromQrUrl(expectedQrUrl);
+            isSecurityCheckPassed = !!expectedParsed
+                && String(expectedParsed.productId) === String(parsed.productId)
+                && Number(expectedParsed.qrcodeId) === Number(parsed.qrcodeId);
+        }
+
+        return res.status(200).json({
+            status: 'success',
+            data: payload,
+            securityCheck: {
+                isPassed: isSecurityCheckPassed,
+                expectedQrUrl: expectedQrUrl || undefined,
+                scannedQrUrl: scannedNormalizedUrl
+            },
+            type: 'Product'
+        });
+    } catch (error) {
+        next(error);
     }
 };

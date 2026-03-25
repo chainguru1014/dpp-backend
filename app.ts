@@ -67,10 +67,11 @@ app.use('/upload', uploadRoutes);
 app.use('/qrcode', qrcodeRoutes);
 app.use('/user', userRoutes);
 
-// Serve product web page - handle /product/:key route for web display
+// Serve product web page for URL-format QR codes:
+//  - /product/:productId/:qrcodeId
 // This must be after /qrcode routes but before the catch-all route
-app.get('/product/:key', (req: any, res: any) => {
-    const { key } = req.params;
+app.get('/product/:productId/:qrcodeId', (req: any, res: any) => {
+    const { productId, qrcodeId } = req.params;
     const path = require('path');
     const htmlPath = path.join(__dirname, '../app/public/product.html');
     const fs = require('fs');
@@ -96,12 +97,14 @@ app.get('/product/:key', (req: any, res: any) => {
             </head>
             <body>
                 <h1>Product Details</h1>
-                <p>Loading product information for key: ${key}</p>
+                <p>Loading product information for key: ${productId}/${qrcodeId}</p>
                 <div id="content"></div>
                 <script>
-                    const key = '${key}';
+                    const productId = '${productId}';
+                    const qrcodeId = '${qrcodeId}';
                     const API_BASE_URL = '${process.env.API_BASE_URL || 'http://localhost:5052/'}';
-                    fetch(API_BASE_URL + 'qrcode/product/' + encodeURIComponent(key))
+                    const endpoint = 'qrcode/public/' + encodeURIComponent(productId) + '/' + encodeURIComponent(qrcodeId);
+                    fetch(API_BASE_URL + endpoint)
                         .then(res => res.json())
                         .then(data => {
                             if (data.status === 'success') {
@@ -163,55 +166,6 @@ app.get('/files/:filename', async (req: any, res: any, next: any) => {
 });
 
 app.use('/files', express.static(uploadsPath));
-
-// Serve product web page - handle /product/:key route
-app.get('/product/:key', (req: any, res: any) => {
-    const { key } = req.params;
-    // Redirect to the HTML file with the key as a query parameter or path
-    // The HTML file will handle the routing via JavaScript
-    const path = require('path');
-    const htmlPath = path.join(__dirname, '../app/public/product.html');
-    const fs = require('fs');
-    
-    if (fs.existsSync(htmlPath)) {
-        // Read and modify HTML to include the key in the URL
-        let html = fs.readFileSync(htmlPath, 'utf8');
-        // The HTML already handles routing via JavaScript, so just serve it
-        res.send(html);
-    } else {
-        // Fallback: return a simple HTML response
-        res.send(`
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <title>Product Details</title>
-                <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            </head>
-            <body>
-                <h1>Product Details</h1>
-                <p>Loading product information for key: ${key}</p>
-                <script>
-                    const key = '${key}';
-                    const API_BASE_URL = '${process.env.API_BASE_URL || 'http://82.165.217.122:5052/'}';
-                    // Redirect to API endpoint to get product data
-                    fetch(API_BASE_URL + 'qrcode/product/' + encodeURIComponent(key))
-                        .then(res => res.json())
-                        .then(data => {
-                            if (data.status === 'success') {
-                                document.body.innerHTML = '<h1>' + data.data.name + '</h1><p>' + data.data.model + '</p><p>' + data.data.detail + '</p>';
-                            } else {
-                                document.body.innerHTML = '<p>Error: ' + (data.message || 'Product not found') + '</p>';
-                            }
-                        })
-                        .catch(err => {
-                            document.body.innerHTML = '<p>Error loading product: ' + err.message + '</p>';
-                        });
-                </script>
-            </body>
-            </html>
-        `);
-    }
-});
 
 //handle undefined Routes
 app.use('*', (req: any, res: any, next: any) => {

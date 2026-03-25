@@ -8,9 +8,13 @@ const QRcodeController = require('../controllers/qrcodeController');
 router.get('/', QRcodeController.getAllQRcodes);
 router.post('/product', QRcodeController.getQRcodesWithProductId);
 router.post('/decrypt', QRcodeController.decrypt);
+router.post('/resolve-url', QRcodeController.resolveProductByQrUrl);
+router.post('/scan/record', QRcodeController.recordScan);
+router.get('/scan/list', QRcodeController.getScannedProducts);
 router.post('/serialdata/productinfo',QRcodeController.getProductInfoWithSerial);
 router.post('/serials',QRcodeController.getSerials)
 router.get('/product/:key', QRcodeController.getProductByKey); // Public web endpoint
+router.get('/public/:productId/:qrcodeId', QRcodeController.getPublicProductByIds); // Public app/web endpoint
 router.get('/:id', QRcodeController.getQRcode);
 router.post('/', QRcodeController.addQRcode);
 router.put('/:id', QRcodeController.updateQRcode);
