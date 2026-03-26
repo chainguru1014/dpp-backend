@@ -102,7 +102,8 @@ app.get('/product/:productId/:qrcodeId', (req: any, res: any) => {
                 <script>
                     const productId = '${productId}';
                     const qrcodeId = '${qrcodeId}';
-                    const API_BASE_URL = '${process.env.API_BASE_URL || 'http://localhost:5052/'}';
+                    // Use same-origin in hosted environments to avoid cross-origin/CORS issues.
+                    const API_BASE_URL = '/';
                     const endpoint = 'qrcode/public/' + encodeURIComponent(productId) + '/' + encodeURIComponent(qrcodeId);
                     fetch(API_BASE_URL + endpoint)
                         .then(res => res.json())
