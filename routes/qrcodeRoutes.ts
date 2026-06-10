@@ -11,6 +11,8 @@ router.post('/decrypt', QRcodeController.decrypt);
 router.post('/resolve-url', QRcodeController.resolveProductByQrUrl);
 router.post('/scan/record', QRcodeController.recordScan);
 router.get('/scan/list', QRcodeController.getScannedProducts);
+router.get('/scan/history', QRcodeController.getScanHistory); // Admin scan-history feed
+router.get('/analytics', QRcodeController.getAnalytics); // Dashboard analytics
 router.post('/serialdata/productinfo',QRcodeController.getProductInfoWithSerial);
 router.post('/serials',QRcodeController.getSerials)
 router.get('/product/:key', QRcodeController.getProductByKey); // Public web endpoint

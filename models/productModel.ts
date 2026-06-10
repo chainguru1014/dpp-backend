@@ -5,6 +5,19 @@ const productSchema = new mongoose.Schema({
         type: mongoose.Schema.Types.ObjectId,
         ref: 'Company'
     },
+    // Legacy whole-product owner pointer. Ownership is now tracked per-unit in the
+    // ProductHolding ledger (see utils/ownership.getPrimaryOwner / moveHolding);
+    // this field is retained for backward compatibility only.
+    current_owner: {
+        kind: {
+            type: String,
+            enum: ['Company', 'User'],
+            default: 'Company'
+        },
+        id: {
+            type: mongoose.Schema.Types.ObjectId
+        }
+    },
     name: {
         type: String,
         require: true
@@ -14,6 +27,28 @@ const productSchema = new mongoose.Schema({
     },
     detail: {
         type: String,
+    },
+    brandInfo: {
+        name: {
+            type: String,
+            required: true,
+            trim: true
+        },
+        detail: {
+            type: String,
+            required: true,
+            trim: true
+        },
+        websiteUrl: {
+            type: String,
+            required: true,
+            trim: true
+        },
+        logoUrl: {
+            type: String,
+            required: true,
+            trim: true
+        }
     },
     images: {
         type: Array,

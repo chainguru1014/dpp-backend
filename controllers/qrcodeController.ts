@@ -4,6 +4,8 @@ const Serials = require('../models/serialModal')
 const Product = require('../models/productModel');
 const Company = require('../models/companyModel');
 const ScanRecord = require('../models/scanRecordModel');
+const User = require('../models/userModel');
+const ProductReaction = require('../models/productReactionModel');
 const base = require('./baseController');
 const APIFeatures = require('../utils/apiFeatures');
 const { encrypt, decrypt } = require('../utils/helper');
@@ -11,7 +13,7 @@ const qrcode = require('qrcode');
 const mongoose = require('mongoose');
 
 const divcount = 20000;
-const PUBLIC_APP_URL = (process.env.PUBLIC_APP_URL || 'http://localhost:3001').replace(/\/+$/, '');
+const PUBLIC_APP_URL = (process.env.PUBLIC_APP_URL || 'http://82.165.217.122:3000').replace(/\/+$/, '');
 
 const buildPublicProductUrl = (productId: any, qrCodeId: any) => {
     return `${PUBLIC_APP_URL}/product/${encodeURIComponent(String(productId))}/${encodeURIComponent(String(qrCodeId))}`;
@@ -75,6 +77,12 @@ const getPublicProductPayload = async (productId: any, qrcodeId: any) => {
         token_id: numericQrId,
         location: qrcodeData.company_id?.location || '',
         ...normalizedProduct,
+        ownerInfo: qrcodeData.company_id ? {
+            name: qrcodeData.company_id?.name || '',
+            email: qrcodeData.company_id?.email || '',
+            phoneNumber: qrcodeData.company_id?.phoneNumber || '',
+            address: qrcodeData.company_id?.location || ''
+        } : null,
         qrcode_img: qrcodeImage,
         serialInfos: serials,
         scannedQRCode
@@ -307,7 +315,8 @@ exports.decrypt = async (req: any, res: any, next: any) => {
 
 exports.recordScan = async (req: any, res: any, next: any) => {
     try {
-        const { product_id, token_id, encryptData, user_id } = req.body || {};
+        const { product_id, token_id, encryptData, user_id, source, location, security_verified, security_qrcode_id } = req.body || {};
+        const sourceNorm = String(source || 'scan').toLowerCase() === 'visit' ? 'visit' : 'scan';
 
         if (!product_id || token_id == null || !encryptData) {
             return res.status(400).json({
@@ -316,16 +325,245 @@ exports.recordScan = async (req: any, res: any, next: any) => {
             });
         }
 
+        // Capture requester IP (respect proxy headers).
+        const ip = String(
+            (req.headers['x-forwarded-for'] || '').split(',')[0].trim() ||
+            req.socket?.remoteAddress ||
+            req.ip ||
+            ''
+        );
+
+        const loc = location && typeof location === 'object' ? {
+            country: location.country || '',
+            region: location.region || '',
+            city: location.city || '',
+            latitude: location.latitude != null ? Number(location.latitude) : null,
+            longitude: location.longitude != null ? Number(location.longitude) : null,
+            source: location.source || (location.latitude != null ? 'gps' : '')
+        } : undefined;
+
         await ScanRecord.create({
             product_id,
             qrcode_id: Number(token_id),
             encrypt_data: String(encryptData),
             user_id: user_id || undefined,
-            scanned_at: new Date()
+            scanned_at: new Date(),
+            source: sourceNorm,
+            ip,
+            location: loc,
+            security_verified: typeof security_verified === 'boolean' ? security_verified : null,
+            security_qrcode_id: security_qrcode_id != null ? Number(security_qrcode_id) : null
         });
 
         return res.status(201).json({
             status: 'success'
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+/**
+ * Admin scan-history feed. Joins each scan with the (optional) logged-in user,
+ * the product, and that user's reactions (like/dislike/buy) for the product.
+ * Supports filtering (date range, product, user, source, security, reaction,
+ * logged-in) + free-text search, with pagination.
+ */
+exports.getScanHistory = async (req: any, res: any, next: any) => {
+    try {
+        const {
+            page = 1, limit = 25, from, to, product_id, user_id,
+            source, security, reaction, loggedIn, q
+        } = req.query || {};
+
+        const pageNum = Math.max(1, parseInt(page) || 1);
+        const limitNum = Math.min(200, Math.max(1, parseInt(limit) || 25));
+
+        const match: any = {};
+        if (product_id && mongoose.Types.ObjectId.isValid(String(product_id))) {
+            match.product_id = new mongoose.Types.ObjectId(String(product_id));
+        }
+        if (user_id && mongoose.Types.ObjectId.isValid(String(user_id))) {
+            match.user_id = new mongoose.Types.ObjectId(String(user_id));
+        }
+        if (source === 'scan' || source === 'visit') match.source = source;
+        if (from || to) {
+            match.scanned_at = {};
+            if (from) match.scanned_at.$gte = new Date(String(from));
+            if (to) { const d = new Date(String(to)); d.setHours(23, 59, 59, 999); match.scanned_at.$lte = d; }
+        }
+        if (security === 'verified') match.security_verified = true;
+        else if (security === 'failed') match.security_verified = false;
+        else if (security === 'na') match.security_verified = { $in: [null, undefined] };
+
+        const pipeline: any[] = [
+            { $match: match },
+            { $sort: { scanned_at: -1 } },
+            { $lookup: { from: 'users', localField: 'user_id', foreignField: '_id', as: 'user' } },
+            { $unwind: { path: '$user', preserveNullAndEmptyArrays: true } },
+            { $lookup: { from: 'products', localField: 'product_id', foreignField: '_id', as: 'product' } },
+            { $unwind: { path: '$product', preserveNullAndEmptyArrays: true } },
+            {
+                $lookup: {
+                    from: 'productreactions',
+                    let: { uid: '$user_id', pid: '$product_id' },
+                    pipeline: [
+                        { $match: { $expr: { $and: [{ $eq: ['$user_id', '$$uid'] }, { $eq: ['$product_id', '$$pid'] }] } } },
+                        { $project: { reaction: 1 } }
+                    ],
+                    as: 'reactionsArr'
+                }
+            },
+            { $addFields: { reactionValues: '$reactionsArr.reaction' } },
+            {
+                $addFields: {
+                    like: { $in: ['like', '$reactionValues'] },
+                    dislike: { $in: ['dislike', '$reactionValues'] },
+                    buy: { $in: ['buy', '$reactionValues'] }
+                }
+            }
+        ];
+
+        if (reaction === 'like' || reaction === 'dislike' || reaction === 'buy') {
+            pipeline.push({ $match: { reactionValues: reaction } });
+        }
+        if (loggedIn === 'true') pipeline.push({ $match: { user_id: { $ne: null } } });
+        else if (loggedIn === 'false') pipeline.push({ $match: { user_id: { $in: [null, undefined] } } });
+
+        if (q && String(q).trim()) {
+            const safe = String(q).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const rx = new RegExp(safe, 'i');
+            pipeline.push({
+                $match: {
+                    $or: [
+                        { 'user.name': rx }, { 'user.email': rx },
+                        { 'product.name': rx }, { 'product.model': rx },
+                        { ip: rx }, { 'location.city': rx }, { 'location.country': rx }
+                    ]
+                }
+            });
+        }
+
+        pipeline.push({
+            $facet: {
+                data: [
+                    { $skip: (pageNum - 1) * limitNum },
+                    { $limit: limitNum },
+                    {
+                        $project: {
+                            _id: 1, scanned_at: 1, source: 1, ip: 1, location: 1,
+                            security_verified: 1, security_qrcode_id: 1, qrcode_id: 1,
+                            like: 1, dislike: 1, buy: 1,
+                            user: {
+                                _id: '$user._id', name: '$user.name', email: '$user.email',
+                                userType: '$user.userType', country: '$user.country'
+                            },
+                            product: { _id: '$product._id', name: '$product.name', model: '$product.model' }
+                        }
+                    }
+                ],
+                total: [{ $count: 'count' }]
+            }
+        });
+
+        const result = await ScanRecord.aggregate(pipeline);
+        const data = result[0]?.data || [];
+        const total = result[0]?.total?.[0]?.count || 0;
+
+        return res.status(200).json({ status: 'success', total, page: pageNum, limit: limitNum, data });
+    } catch (error) {
+        next(error);
+    }
+};
+
+/**
+ * Dashboard analytics: totals, scans-per-day series, source / security /
+ * reaction / audience breakdowns, and top products / brands by scans.
+ */
+exports.getAnalytics = async (req: any, res: any, next: any) => {
+    try {
+        const DAYS = 14;
+        const since = new Date();
+        since.setHours(0, 0, 0, 0);
+        since.setDate(since.getDate() - (DAYS - 1));
+
+        const [
+            totalScans, totalUsers, totalCompanies, totalProducts,
+            uniqueScannerIds, byDayAgg, sourceAgg, securityAgg, reactionsAgg,
+            loggedInScans, topProductsAgg, topBrandsAgg
+        ] = await Promise.all([
+            ScanRecord.countDocuments({}),
+            User.countDocuments({ role: 'User' }),
+            Company.countDocuments({}),
+            Product.countDocuments({ is_deleted: { $ne: true } }),
+            ScanRecord.distinct('user_id', { user_id: { $ne: null } }),
+            ScanRecord.aggregate([
+                { $match: { scanned_at: { $gte: since } } },
+                { $group: { _id: { $dateToString: { format: '%Y-%m-%d', date: '$scanned_at' } }, count: { $sum: 1 } } }
+            ]),
+            ScanRecord.aggregate([{ $group: { _id: '$source', count: { $sum: 1 } } }]),
+            ScanRecord.aggregate([{ $group: { _id: '$security_verified', count: { $sum: 1 } } }]),
+            ProductReaction.aggregate([{ $group: { _id: '$reaction', count: { $sum: 1 } } }]),
+            ScanRecord.countDocuments({ user_id: { $ne: null } }),
+            ScanRecord.aggregate([
+                { $group: { _id: '$product_id', count: { $sum: 1 } } },
+                { $sort: { count: -1 } }, { $limit: 6 },
+                { $lookup: { from: 'products', localField: '_id', foreignField: '_id', as: 'p' } },
+                { $unwind: { path: '$p', preserveNullAndEmptyArrays: true } },
+                { $project: { name: { $ifNull: ['$p.name', 'Unknown'] }, count: 1 } }
+            ]),
+            ScanRecord.aggregate([
+                { $lookup: { from: 'products', localField: 'product_id', foreignField: '_id', as: 'p' } },
+                { $unwind: '$p' },
+                { $group: { _id: '$p.company_id', count: { $sum: 1 } } },
+                { $sort: { count: -1 } }, { $limit: 6 },
+                { $lookup: { from: 'companies', localField: '_id', foreignField: '_id', as: 'c' } },
+                { $unwind: { path: '$c', preserveNullAndEmptyArrays: true } },
+                { $project: { name: { $ifNull: ['$c.name', 'Unknown'] }, count: 1 } }
+            ])
+        ]);
+
+        const dayMap: any = {};
+        byDayAgg.forEach((d: any) => { dayMap[d._id] = d.count; });
+        const scansByDay: any[] = [];
+        for (let i = 0; i < DAYS; i++) {
+            const dt = new Date(since);
+            dt.setDate(since.getDate() + i);
+            const key = dt.toISOString().slice(0, 10);
+            scansByDay.push({ date: key, count: dayMap[key] || 0 });
+        }
+
+        const source = { scan: 0, visit: 0 };
+        sourceAgg.forEach((s: any) => { if (s._id === 'visit') source.visit = s.count; else source.scan += s.count; });
+
+        const security = { verified: 0, failed: 0, na: 0 };
+        securityAgg.forEach((s: any) => {
+            if (s._id === true) security.verified = s.count;
+            else if (s._id === false) security.failed = s.count;
+            else security.na += s.count;
+        });
+
+        const reactions: any = { like: 0, dislike: 0, buy: 0 };
+        reactionsAgg.forEach((r: any) => { if (reactions[r._id] !== undefined) reactions[r._id] = r.count; });
+
+        return res.status(200).json({
+            status: 'success',
+            data: {
+                totals: {
+                    scans: totalScans,
+                    users: totalUsers,
+                    companies: totalCompanies,
+                    products: totalProducts,
+                    uniqueScanners: (uniqueScannerIds || []).filter(Boolean).length
+                },
+                scansByDay,
+                source,
+                security,
+                reactions,
+                audience: { loggedIn: loggedInScans, guest: Math.max(0, totalScans - loggedInScans) },
+                topProducts: topProductsAgg,
+                topBrands: topBrandsAgg
+            }
         });
     } catch (error) {
         next(error);
@@ -373,7 +611,8 @@ exports.getScannedProducts = async (req: any, res: any, next: any) => {
                 ...normalizedProduct,
                 token_id: record.latest?.qrcode_id,
                 scannedAt: new Date(record.latest?.scanned_at || Date.now()).getTime(),
-                scannedQRCode: record.latest?.encrypt_data || ''
+                scannedQRCode: record.latest?.encrypt_data || '',
+                visitSource: record.latest?.source === 'visit' ? 'visit' : 'scan'
             };
         });
 

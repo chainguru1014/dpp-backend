@@ -96,7 +96,11 @@ exports.getProduct = base.getOne(Product);
 // Don't update password on this 
 exports.updateProduct = async(req: any, res: any, next: any) => {
     try {
-        const product = await Product.findOne({ name: req.body.name });
+        const product = (await Product.findById(req.params.id)) || (await Product.findOne({ name: req.body.name }));
+
+        if (!product) {
+            return next(new AppError(404, 'fail', 'No product found with that id'), req, res, next);
+        }
 
         if (product.total_minted_amount > 0) {
             return next(new AppError(404, 'fail', "Can't update this product. You already minted."), req, res, next);
@@ -128,12 +132,16 @@ exports.updateProduct = async(req: any, res: any, next: any) => {
 
 exports.deleteProduct = async(req: any, res: any, next: any) => {
     try {
-        const product = await Product.findOne({ _id: req.params._id });
+        const product = await Product.findById(req.params.id);
+
+        if (!product) {
+            return next(new AppError(404, 'fail', 'No product found with that id'), req, res, next);
+        }
 
         if (product.total_minted_amount > 0) {
             return next(new AppError(404, 'fail', "Can't remove this product. You already minted."), req, res, next);
         }
-        
+
         const doc = await Product.findByIdAndUpdate(req.params.id, { is_deleted: true }, {
             new: true,
             runValidators: true

@@ -1,5 +1,7 @@
 const User = require('../models/userModel');
 const Company = require('../models/companyModel');
+const Product = require('../models/productModel');
+const ScanRecord = require('../models/scanRecordModel');
 const AppError = require('../utils/appError');
 const jwt = require('jsonwebtoken');
 
@@ -56,6 +58,41 @@ exports.getAdminUserData = async (req: any, res: any, next: any) => {
         const users = await User.find(userFilter).sort({ isApproved: -1 });
         const companies = await Company.find().sort({ isVerified: -1 });
 
+        // Per-company analytics: products uploaded, total scans of those products,
+        // and how many distinct users scanned them.
+        const productCounts = await Product.aggregate([
+            { $match: { is_deleted: { $ne: true } } },
+            { $group: { _id: '$company_id', count: { $sum: 1 } } }
+        ]);
+        const productCountMap: any = {};
+        productCounts.forEach((p: any) => { if (p._id) productCountMap[String(p._id)] = p.count; });
+
+        const scanCounts = await ScanRecord.aggregate([
+            { $lookup: { from: 'products', localField: 'product_id', foreignField: '_id', as: 'p' } },
+            { $unwind: '$p' },
+            { $group: { _id: '$p.company_id', scans: { $sum: 1 }, users: { $addToSet: '$user_id' } } }
+        ]);
+        const scanCountMap: any = {};
+        scanCounts.forEach((s: any) => {
+            if (s._id) {
+                scanCountMap[String(s._id)] = {
+                    scans: s.scans,
+                    uniqueScanners: (s.users || []).filter(Boolean).length
+                };
+            }
+        });
+
+        const companiesEnriched = companies.map((c: any) => {
+            const obj = typeof c.toObject === 'function' ? c.toObject() : c;
+            const id = String(obj._id);
+            return {
+                ...obj,
+                productCount: productCountMap[id] || 0,
+                scanCount: scanCountMap[id]?.scans || 0,
+                uniqueScannerCount: scanCountMap[id]?.uniqueScanners || 0
+            };
+        });
+
         res.status(200).json({
             status: 'success',
             results: {
@@ -64,7 +101,7 @@ exports.getAdminUserData = async (req: any, res: any, next: any) => {
             },
             data: {
                 users,
-                companies
+                companies: companiesEnriched
             }
         });
     } catch (error) {

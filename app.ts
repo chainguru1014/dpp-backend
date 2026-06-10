@@ -12,6 +12,8 @@ const router = express.Router();
 const companyRoutes = require('./routes/companyRoutes');
 const qrcodeRoutes = require('./routes/qrcodeRoutes');
 const productRoutes = require('./routes/productRoutes');
+const engagementRoutes = require('./routes/engagementRoutes');
+const transferRoutes = require('./routes/transferRoutes');
 const uploadRoutes = require('./routes/uploadRoutes');
 const userRoutes = require('./routes/userRoutes');
 const globalErrHandler = require('./controllers/errorController');
@@ -66,6 +68,8 @@ app.use('/company', companyRoutes);
 app.use('/upload', uploadRoutes);
 app.use('/qrcode', qrcodeRoutes);
 app.use('/user', userRoutes);
+app.use('/engagement', engagementRoutes);
+app.use('/transfer', transferRoutes);
 
 // Serve product web page for URL-format QR codes:
 //  - /product/:productId/:qrcodeId
