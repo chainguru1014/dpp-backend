@@ -289,15 +289,18 @@ exports.mint = async(req: any, res: any, next: any) => {
         console.log(end.getTime() - start.getTime())
 
         // Update total minted amount purely in the database (no blockchain interaction).
-        product.total_minted_amount += mintAmount;
-        await product.save();
+        // Use an atomic $inc instead of product.save() so we don't re-validate the
+        // whole document — older products with incomplete brandInfo would otherwise
+        // fail required-field validation on every mint.
+        const newTotal = (product.total_minted_amount || 0) + mintAmount;
+        await Product.updateOne({ _id: product._id }, { $inc: { total_minted_amount: mintAmount } });
 
         // @ts-ignore
         global.io.emit('Refresh product data');
 
         res.status(200).json({
             status: 'success',
-            offset: product.total_minted_amount,
+            offset: newTotal,
         });
     } catch (error) {
         next(error);

@@ -45,6 +45,13 @@ const ownershipTransferSchema = new mongoose.Schema({
         enum: ['pending', 'confirmed', 'rejected', 'cancelled'],
         default: 'pending'
     },
+    // True once the buyer actually pressed "Send" (the request was delivered to
+    // the owner). A transfer is created on "Buy" to mint the QR, but the buyer's
+    // button only shows "Requested" after this becomes true.
+    requestSent: {
+        type: Boolean,
+        default: false
+    },
     productSnapshot: {
         name: { type: String, default: '' },
         model: { type: String, default: '' },

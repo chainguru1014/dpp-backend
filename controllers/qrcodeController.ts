@@ -9,8 +9,19 @@ const ProductReaction = require('../models/productReactionModel');
 const base = require('./baseController');
 const APIFeatures = require('../utils/apiFeatures');
 const { encrypt, decrypt } = require('../utils/helper');
+const { getOwnedProductIds } = require('../utils/ownership');
 const qrcode = require('qrcode');
 const mongoose = require('mongoose');
+
+// Resolve an optional owner scope (owner_kind + owner_id) from a request into a
+// product_id $in filter. Returns null when no owner scope is requested.
+const resolveOwnerProductMatch = async (req: any) => {
+    const ownerKind = req.query?.owner_kind === 'User' ? 'User' : req.query?.owner_kind === 'Company' ? 'Company' : null;
+    const ownerId = req.query?.owner_id;
+    if (!ownerKind || !ownerId || !mongoose.Types.ObjectId.isValid(String(ownerId))) return null;
+    const ids = await getOwnedProductIds(ownerKind, new mongoose.Types.ObjectId(String(ownerId)));
+    return { ids, filter: { product_id: { $in: ids } } };
+};
 
 const divcount = 20000;
 const PUBLIC_APP_URL = (process.env.PUBLIC_APP_URL || 'http://82.165.217.122:3000').replace(/\/+$/, '');
@@ -396,6 +407,10 @@ exports.getScanHistory = async (req: any, res: any, next: any) => {
         else if (security === 'failed') match.security_verified = false;
         else if (security === 'na') match.security_verified = { $in: [null, undefined] };
 
+        // Owner scope (company/user): restrict to the products they own.
+        const ownerScope = await resolveOwnerProductMatch(req);
+        if (ownerScope) match.product_id = { $in: ownerScope.ids };
+
         const pipeline: any[] = [
             { $match: match },
             { $sort: { scanned_at: -1 } },
@@ -487,25 +502,32 @@ exports.getAnalytics = async (req: any, res: any, next: any) => {
         since.setHours(0, 0, 0, 0);
         since.setDate(since.getDate() - (DAYS - 1));
 
+        // Optional owner scope: when present, every metric is restricted to the
+        // owner's products (used by company/user dashboards).
+        const ownerScope = await resolveOwnerProductMatch(req);
+        const pFilter = ownerScope ? ownerScope.filter : {};
+        const scanScopeStage = ownerScope ? [{ $match: pFilter }] : [];
+
         const [
             totalScans, totalUsers, totalCompanies, totalProducts,
             uniqueScannerIds, byDayAgg, sourceAgg, securityAgg, reactionsAgg,
             loggedInScans, topProductsAgg, topBrandsAgg
         ] = await Promise.all([
-            ScanRecord.countDocuments({}),
+            ScanRecord.countDocuments({ ...pFilter }),
             User.countDocuments({ role: 'User' }),
             Company.countDocuments({}),
-            Product.countDocuments({ is_deleted: { $ne: true } }),
-            ScanRecord.distinct('user_id', { user_id: { $ne: null } }),
+            ownerScope ? Promise.resolve(ownerScope.ids.length) : Product.countDocuments({ is_deleted: { $ne: true } }),
+            ScanRecord.distinct('user_id', { user_id: { $ne: null }, ...pFilter }),
             ScanRecord.aggregate([
-                { $match: { scanned_at: { $gte: since } } },
+                { $match: { scanned_at: { $gte: since }, ...pFilter } },
                 { $group: { _id: { $dateToString: { format: '%Y-%m-%d', date: '$scanned_at' } }, count: { $sum: 1 } } }
             ]),
-            ScanRecord.aggregate([{ $group: { _id: '$source', count: { $sum: 1 } } }]),
-            ScanRecord.aggregate([{ $group: { _id: '$security_verified', count: { $sum: 1 } } }]),
-            ProductReaction.aggregate([{ $group: { _id: '$reaction', count: { $sum: 1 } } }]),
-            ScanRecord.countDocuments({ user_id: { $ne: null } }),
+            ScanRecord.aggregate([...scanScopeStage, { $group: { _id: '$source', count: { $sum: 1 } } }]),
+            ScanRecord.aggregate([...scanScopeStage, { $group: { _id: '$security_verified', count: { $sum: 1 } } }]),
+            ProductReaction.aggregate([...scanScopeStage, { $group: { _id: '$reaction', count: { $sum: 1 } } }]),
+            ScanRecord.countDocuments({ user_id: { $ne: null }, ...pFilter }),
             ScanRecord.aggregate([
+                ...scanScopeStage,
                 { $group: { _id: '$product_id', count: { $sum: 1 } } },
                 { $sort: { count: -1 } }, { $limit: 6 },
                 { $lookup: { from: 'products', localField: '_id', foreignField: '_id', as: 'p' } },
@@ -513,6 +535,7 @@ exports.getAnalytics = async (req: any, res: any, next: any) => {
                 { $project: { name: { $ifNull: ['$p.name', 'Unknown'] }, count: 1 } }
             ]),
             ScanRecord.aggregate([
+                ...scanScopeStage,
                 { $lookup: { from: 'products', localField: 'product_id', foreignField: '_id', as: 'p' } },
                 { $unwind: '$p' },
                 { $group: { _id: '$p.company_id', count: { $sum: 1 } } },

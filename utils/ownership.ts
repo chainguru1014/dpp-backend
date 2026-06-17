@@ -1,5 +1,7 @@
+const mongoose = require('mongoose');
 const Company = require('../models/companyModel');
 const User = require('../models/userModel');
+const Product = require('../models/productModel');
 const ProductHolding = require('../models/productHoldingModel');
 
 const normalizeEmail = (email: any) => String(email || '').trim().toLowerCase();
@@ -128,6 +130,49 @@ const claimEmailHoldings = async (user: any) => {
     );
 };
 
+/**
+ * The largest current holder of a product EXCLUDING a given party (the buyer).
+ * Used by the consumer "Buy" flow: a user who already owns some units can buy
+ * more, as long as another owner (brand/company or a different holder) still has
+ * units to sell. Returns null only when the excluded party is the sole holder.
+ */
+const getPrimaryOwnerExcluding = async (product: any, exclude: any) => {
+    const holdings = await ProductHolding.find({ product_id: product._id, quantity: { $gt: 0 } })
+        .sort({ quantity: -1 })
+        .lean();
+    for (const h of holdings) {
+        const o = h.owner;
+        const isExcluded = exclude && o.kind === exclude.kind && String(o.id) === String(exclude.id);
+        if (!isExcluded) {
+            return { kind: o.kind, id: o.id, email: o.email || '', name: o.name || '' };
+        }
+    }
+    return null;
+};
+
+/**
+ * The set of product ids an owner (User or Company) is associated with: every
+ * product they currently hold units of, plus — for a brand company — products
+ * they created. Used to scope analytics / ESG / LCA feeds to an owner.
+ */
+const getOwnedProductIds = async (ownerKind: string, ownerId: any) => {
+    const idSet = new Set<string>();
+    const holdings = await ProductHolding.find({
+        'owner.kind': ownerKind,
+        'owner.id': ownerId,
+        quantity: { $gt: 0 }
+    }).select('product_id').lean();
+    holdings.forEach((h: any) => idSet.add(String(h.product_id)));
+
+    if (ownerKind === 'Company') {
+        const created = await Product.find({ company_id: ownerId, is_deleted: { $ne: true } })
+            .select('_id').lean();
+        created.forEach((p: any) => idSet.add(String(p._id)));
+    }
+
+    return [...idSet].map((id) => new mongoose.Types.ObjectId(id));
+};
+
 module.exports = {
     normalizeEmail,
     resolveOwnerIdentity,
@@ -135,5 +180,7 @@ module.exports = {
     ownerHolds,
     moveHolding,
     getPrimaryOwner,
+    getPrimaryOwnerExcluding,
     claimEmailHoldings,
+    getOwnedProductIds,
 };

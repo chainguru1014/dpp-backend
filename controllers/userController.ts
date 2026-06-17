@@ -4,6 +4,22 @@ const Product = require('../models/productModel');
 const ScanRecord = require('../models/scanRecordModel');
 const AppError = require('../utils/appError');
 const jwt = require('jsonwebtoken');
+const { claimEmailHoldings } = require('../utils/ownership');
+
+/**
+ * Claim any product holdings that were transferred to this user's email address
+ * while they were unregistered (Email-kind holdings). Called on register/login so
+ * a receiver owns transferred products the moment they authenticate with the
+ * matching email, whether from the mobile app or the admin panel. Never blocks
+ * authentication if claiming fails.
+ */
+const claimHoldingsForUser = async (user: any) => {
+    try {
+        await claimEmailHoldings(user);
+    } catch (err) {
+        console.error('claimEmailHoldings failed:', err);
+    }
+};
 
 const normalizeUsername = (value: any) => (typeof value === 'string' ? value.trim() : '');
 
@@ -193,6 +209,9 @@ exports.login = async (req: any, res: any, next: any) => {
             });
         }
 
+        // Claim any products transferred to this user's email before they registered.
+        await claimHoldingsForUser(user);
+
         // Generate JWT token
         const token = jwt.sign(
             { id: user._id, name: user.name },
@@ -336,6 +355,9 @@ exports.register = async (req: any, res: any, next: any) => {
             profileCompleted: true
         });
 
+        // Claim any products transferred to this email while the receiver was unregistered.
+        await claimHoldingsForUser(newUser);
+
         // Generate JWT token
         const token = jwt.sign(
             { id: newUser._id, name: newUser.name },
@@ -405,6 +427,9 @@ exports.googleLogin = async (req: any, res: any, next: any) => {
                 password: 'google'
             });
         }
+
+        // Claim any products transferred to this email before the receiver signed in.
+        await claimHoldingsForUser(user);
 
         // Generate JWT token
         const token = jwt.sign(

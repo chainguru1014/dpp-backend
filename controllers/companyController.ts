@@ -22,7 +22,9 @@ exports.addCompany = async(req: any, res: any, next: any) => {
         }
 
         // Create company without any blockchain keys or on-chain minting.
-        const doc = await Company.create(req.body);
+        // Force the role to 'company' — only the built-in admin account is 'super',
+        // and clients must not be able to self-assign an elevated role.
+        const doc = await Company.create({ ...req.body, role: 'company' });
 
         res.status(200).json({
             status: 'success',

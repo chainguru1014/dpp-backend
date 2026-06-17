@@ -5,6 +5,13 @@ const companySchema = new mongoose.Schema({
         type: String,
         require: true
     },
+    // Access role. 'super' = platform super admin (the built-in "admin" account);
+    // 'company' = a normal brand company. Defaults to 'company' for new accounts.
+    role: {
+        type: String,
+        enum: ['super', 'company'],
+        default: 'company'
+    },
     password: {
         type: String,
         require: true

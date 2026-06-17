@@ -16,6 +16,7 @@ const engagementRoutes = require('./routes/engagementRoutes');
 const transferRoutes = require('./routes/transferRoutes');
 const uploadRoutes = require('./routes/uploadRoutes');
 const userRoutes = require('./routes/userRoutes');
+const notificationRoutes = require('./routes/notificationRoutes');
 const globalErrHandler = require('./controllers/errorController');
 const AppError = require('./utils/appError');
 
@@ -70,6 +71,7 @@ app.use('/qrcode', qrcodeRoutes);
 app.use('/user', userRoutes);
 app.use('/engagement', engagementRoutes);
 app.use('/transfer', transferRoutes);
+app.use('/notification', notificationRoutes);
 
 // Serve product web page for URL-format QR codes:
 //  - /product/:productId/:qrcodeId

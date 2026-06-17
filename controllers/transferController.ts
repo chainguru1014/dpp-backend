@@ -9,15 +9,19 @@ const ScanRecord = require('../models/scanRecordModel');
 const ProductReaction = require('../models/productReactionModel');
 const User = require('../models/userModel');
 const Company = require('../models/companyModel');
+const Notification = require('../models/notificationModel');
 const {
     resolveOwnerIdentity,
     ensureSeedHolding,
     ownerHolds,
     moveHolding,
     getPrimaryOwner,
+    getPrimaryOwnerExcluding,
     claimEmailHoldings,
     normalizeEmail,
+    getOwnedProductIds,
 } = require('../utils/ownership');
+const { createNotification } = require('./notificationController');
 
 const toObjectIdIfValid = (value: any) => {
     if (!value) return null;
@@ -87,11 +91,23 @@ exports.initiate = async (req: any, res: any, next: any) => {
         }
 
         await ensureSeedHolding(product);
-        const owner = await getPrimaryOwner(product);
-        // A buyer who already owns the product cannot initiate a transfer to themselves.
-        if (owner.id && String(owner.id) === String(buyerObjId) && owner.kind === 'User') {
-            return res.status(409).json({ status: 'fail', message: 'You already own this product' });
+        // Ownership is per-unit: a buyer who already holds some items can buy more,
+        // as long as another owner (brand/company or a different holder) still has
+        // units to sell. The seller is the largest holder that isn't the buyer.
+        const owner = await getPrimaryOwnerExcluding(product, { kind: 'User', id: buyerObjId });
+        if (!owner) {
+            return res.status(409).json({ status: 'fail', message: 'No items available to purchase for this product' });
         }
+
+        // Resolve a display-friendly owner identity (name + email) for the buyer,
+        // with a brand-company fallback. Computed here so it's returned even when
+        // an older pending transfer (with an empty snapshot) is reused below.
+        let fromOwner = await resolveOwnerIdentity(owner.kind, owner.id);
+        if (!fromOwner.name && !fromOwner.email && product.company_id) {
+            const c = await Company.findById(product.company_id).lean();
+            if (c) fromOwner = { kind: 'Company', id: c._id, name: c.name || '', email: c.email || '' };
+        }
+        const ownerInfo = { kind: fromOwner.kind, id: fromOwner.id, name: fromOwner.name, email: fromOwner.email };
 
         // Reuse an existing pending transfer if one already exists.
         const existing = await OwnershipTransfer.findOne({
@@ -101,17 +117,22 @@ exports.initiate = async (req: any, res: any, next: any) => {
             status: 'pending'
         });
         if (existing) {
+            // Refresh the stored owner snapshot in case it was empty/stale.
+            if (!existing.from_owner?.name && !existing.from_owner?.email) {
+                existing.from_owner = ownerInfo;
+                await existing.save();
+            }
             const existingUrl = `${webBaseUrl()}/transfer/${existing.code}`;
             return res.status(200).json({
                 status: 'success',
                 code: existing.code,
                 url: existingUrl,
                 qrImage: await qrcode.toDataURL(existingUrl),
-                transfer: existing
+                transfer: existing,
+                owner: ownerInfo
             });
         }
 
-        const fromOwner = await resolveOwnerIdentity(owner.kind, owner.id);
         const buyerName = [buyer.firstName, buyer.lastName].filter(Boolean).join(' ').trim() || buyer.name || '';
         const code = crypto.randomBytes(16).toString('base64url');
 
@@ -123,7 +144,7 @@ exports.initiate = async (req: any, res: any, next: any) => {
             status: 'pending',
             productSnapshot: buildProductSnapshot(product),
             quantity: 1,
-            from_owner: { kind: fromOwner.kind, id: fromOwner.id, name: fromOwner.name, email: fromOwner.email },
+            from_owner: ownerInfo,
             to_owner: {
                 kind: 'User',
                 id: buyerObjId,
@@ -134,13 +155,17 @@ exports.initiate = async (req: any, res: any, next: any) => {
             }
         });
 
+        // Note: the owner is notified when the buyer taps "Send" in the share
+        // dialog (POST /transfer/:code/notify-owner), not on initiate.
+
         const url = `${webBaseUrl()}/transfer/${code}`;
         return res.status(200).json({
             status: 'success',
             code,
             url,
             qrImage: await qrcode.toDataURL(url),
-            transfer
+            transfer,
+            owner: ownerInfo
         });
     } catch (error) {
         next(error);
@@ -243,6 +268,19 @@ exports.confirm = async (req: any, res: any, next: any) => {
             global.io && global.io.emit('Refresh user data');
         } catch (e) { /* socket optional */ }
 
+        // Let the buyer know their request was accepted.
+        if (transfer.to_owner?.id) {
+            await createNotification({
+                audience: 'user',
+                recipient: { kind: 'User', id: transfer.to_owner.id, name: transfer.to_owner.name, email: transfer.to_owner.email },
+                type: 'transfer_confirmed',
+                level: 'success',
+                title: 'Ownership transfer confirmed',
+                message: `You now own "${transfer.productSnapshot?.name || product.name}".`,
+                data: { transferCode: transfer.code, productId: String(product._id), productName: transfer.productSnapshot?.name || product.name }
+            });
+        }
+
         return res.status(200).json({ status: 'success', data: transfer });
     } catch (error) {
         next(error);
@@ -284,6 +322,35 @@ exports.reject = async (req: any, res: any, next: any) => {
         transfer.confirmed_at = new Date();
         await transfer.save();
 
+        const productName = transfer.productSnapshot?.name || 'a product';
+        if (isBuyer) {
+            // Buyer cancelled — notify the owner that the request was withdrawn.
+            if (transfer.from_owner?.id) {
+                await createNotification({
+                    audience: transfer.from_owner.kind === 'User' ? 'user' : 'company',
+                    recipient: { kind: transfer.from_owner.kind, id: transfer.from_owner.id, name: transfer.from_owner.name, email: transfer.from_owner.email },
+                    type: 'transfer_rejected',
+                    level: 'warning',
+                    title: 'Transfer request cancelled',
+                    message: `${transfer.to_owner?.name || 'The requester'} cancelled the transfer request for "${productName}".`,
+                    data: { transferCode: transfer.code, productId: String(transfer.product_id), productName }
+                });
+            }
+        } else {
+            // Owner rejected — notify the buyer.
+            if (transfer.to_owner?.id) {
+                await createNotification({
+                    audience: 'user',
+                    recipient: { kind: 'User', id: transfer.to_owner.id, name: transfer.to_owner.name, email: transfer.to_owner.email },
+                    type: 'transfer_rejected',
+                    level: 'warning',
+                    title: 'Transfer request rejected',
+                    message: `Your request to receive "${productName}" was rejected.`,
+                    data: { transferCode: transfer.code, productId: String(transfer.product_id), productName }
+                });
+            }
+        }
+
         return res.status(200).json({ status: 'success', data: transfer });
     } catch (error) {
         next(error);
@@ -324,6 +391,14 @@ exports.list = async (req: any, res: any, next: any) => {
             match.createdAt = {};
             if (from) match.createdAt.$gte = new Date(String(from));
             if (to) { const d = new Date(String(to)); d.setHours(23, 59, 59, 999); match.createdAt.$lte = d; }
+        }
+
+        // Owner scope (company/user): restrict to transfers of the products they own.
+        const ownerKind = req.query?.owner_kind === 'User' ? 'User' : req.query?.owner_kind === 'Company' ? 'Company' : null;
+        const ownerId = req.query?.owner_id;
+        if (ownerKind && ownerId && mongoose.Types.ObjectId.isValid(String(ownerId))) {
+            const ids = await getOwnedProductIds(ownerKind, new mongoose.Types.ObjectId(String(ownerId)));
+            match.product_id = { $in: ids };
         }
 
         const pipeline: any[] = [
@@ -505,6 +580,232 @@ exports.shareEmail = async (req: any, res: any, next: any) => {
 };
 
 /**
+ * Push an in-app purchase-request notification to the product item's current
+ * owner (the seller on the transfer). They get an actionable transfer_request
+ * notification (Approve/Decline) in the app / admin panel. Idempotent per
+ * (transfer, recipient) so re-sending doesn't pile up duplicates.
+ */
+exports.notifyOwner = async (req: any, res: any, next: any) => {
+    try {
+        const code = String(req.params?.code || '').trim();
+        if (!code) {
+            return res.status(400).json({ status: 'fail', message: 'code is required' });
+        }
+
+        const transfer = await OwnershipTransfer.findOne({ code }).lean();
+        if (!transfer) {
+            return res.status(404).json({ status: 'fail', message: 'Transfer not found' });
+        }
+
+        // The request goes to the product item's CURRENT owner (the seller),
+        // regardless of the email the buyer shared the link with. Re-resolve it
+        // live (the from_owner snapshot may be stale or have no id) and fall back
+        // to the product's brand company so a real owner account is targeted.
+        let owner: any = null;
+        const product = await Product.findById(transfer.product_id);
+        if (product) {
+            owner = await getPrimaryOwnerExcluding(product, { kind: transfer.to_owner?.kind, id: transfer.to_owner?.id });
+            if ((!owner || !owner.id) && product.company_id) {
+                const c = await Company.findById(product.company_id).lean();
+                if (c) owner = { kind: 'Company', id: c._id, email: c.email || '', name: c.name || '' };
+            }
+        }
+        // Last resort: the snapshot stored on the transfer.
+        if ((!owner || !owner.id) && transfer.from_owner?.id) {
+            owner = transfer.from_owner;
+        }
+
+        // Mark the request as actually sent (the buyer pressed Send) regardless of
+        // whether a registered owner account exists to receive the in-app notice.
+        await OwnershipTransfer.updateOne({ code }, { $set: { requestSent: true } });
+
+        if (!owner || !owner.id) {
+            console.warn('notifyOwner: no registered owner to notify for transfer', code);
+            return res.status(200).json({ status: 'success', notified: false, reason: 'no_owner' });
+        }
+
+        const recipient: any = { kind: owner.kind, id: owner.id, name: owner.name || '', email: owner.email || '' };
+        const audience = owner.kind === 'User' ? 'user' : 'company';
+
+        const buyer = transfer.to_owner || {};
+        const snap = transfer.productSnapshot || {};
+
+        // Skip if this owner was already notified for this transfer.
+        const existing = await Notification.findOne({
+            'recipient.id': recipient.id,
+            type: 'transfer_request',
+            'data.transferCode': transfer.code,
+            is_deleted: false
+        }).lean();
+
+        if (!existing) {
+            await createNotification({
+                audience,
+                recipient,
+                type: 'transfer_request',
+                level: 'info',
+                title: 'New ownership transfer request',
+                message: `${buyer.name || 'A user'} requested to receive "${snap.name || 'a product'}".`,
+                data: {
+                    transferCode: transfer.code,
+                    productId: String(transfer.product_id),
+                    productName: snap.name,
+                    productImage: snap.image,
+                    brandName: snap.brandName,
+                    quantity: transfer.quantity || 1,
+                    buyerName: buyer.name,
+                    buyerEmail: buyer.email,
+                    buyerPhone: buyer.phone,
+                    buyerCountry: buyer.country
+                }
+            });
+        }
+
+        return res.status(200).json({ status: 'success', notified: true });
+    } catch (error) {
+        next(error);
+    }
+};
+
+/**
+ * GET /transfer/buyer-status?product_id=&qrcode_id=&buyer_id= — the status of the
+ * buyer's latest transfer for a product item. Drives the app Buy button:
+ * pending → "Requested", confirmed → "Owned", otherwise → "Buy".
+ */
+exports.buyerStatus = async (req: any, res: any, next: any) => {
+    try {
+        const productObjId = toObjectIdIfValid(req.query?.product_id);
+        const buyerObjId = toObjectIdIfValid(req.query?.buyer_id);
+        const qrcodeIdRaw = req.query?.qrcode_id;
+        if (!productObjId || !buyerObjId) {
+            return res.status(400).json({ status: 'fail', message: 'product_id and buyer_id are required' });
+        }
+        const q: any = { product_id: productObjId, 'to_owner.id': buyerObjId };
+        if (qrcodeIdRaw != null && qrcodeIdRaw !== '') {
+            const n = Number(qrcodeIdRaw);
+            if (Number.isFinite(n)) q.qrcode_id = n;
+        }
+        const transfer = await OwnershipTransfer.findOne(q).sort({ createdAt: -1 }).lean();
+        return res.status(200).json({
+            status: 'success',
+            transferStatus: transfer ? transfer.status : null,
+            requestSent: transfer ? !!transfer.requestSent : false
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+/**
+ * GET /transfer/product-owner?product_id=&qrcode_id= — the current owner of a
+ * specific product ITEM (name + email). Ownership/authentication are keyed by the
+ * product id AND the item (qrcode) id together. Shown on the app product page.
+ */
+const resolveItemOwner = async (product: any, qrcodeIdRaw: any) => {
+    // Item-specific: the latest confirmed transfer of THIS item gives its owner.
+    const n = Number(qrcodeIdRaw);
+    if (qrcodeIdRaw != null && qrcodeIdRaw !== '' && Number.isFinite(n)) {
+        const transfer = await OwnershipTransfer.findOne({
+            product_id: product._id,
+            qrcode_id: n,
+            status: 'confirmed'
+        }).sort({ confirmed_at: -1, createdAt: -1 }).lean();
+        if (transfer?.to_owner?.id) {
+            const r = await resolveOwnerIdentity(transfer.to_owner.kind, transfer.to_owner.id);
+            if (r.name || r.email) return r;
+            return {
+                kind: transfer.to_owner.kind,
+                id: transfer.to_owner.id,
+                name: transfer.to_owner.name || '',
+                email: transfer.to_owner.email || ''
+            };
+        }
+    }
+    // Untransferred item → the brand/company that created the product.
+    if (product.company_id) {
+        const c = await Company.findById(product.company_id).lean();
+        if (c) return { kind: 'Company', id: c._id, name: c.name || '', email: c.email || '' };
+    }
+    // Last resort → the product's primary holder.
+    const owner = await getPrimaryOwner(product);
+    return await resolveOwnerIdentity(owner.kind, owner.id);
+};
+
+exports.productOwner = async (req: any, res: any, next: any) => {
+    try {
+        const productObjId = toObjectIdIfValid(req.query?.product_id);
+        if (!productObjId) {
+            return res.status(400).json({ status: 'fail', message: 'product_id is required' });
+        }
+        const product = await Product.findById(productObjId);
+        if (!product || product.is_deleted) {
+            return res.status(404).json({ status: 'fail', message: 'Product not found' });
+        }
+        await ensureSeedHolding(product);
+        const resolved = await resolveItemOwner(product, req.query?.qrcode_id);
+        return res.status(200).json({
+            status: 'success',
+            owner: { kind: resolved.kind, name: resolved.name || '', email: resolved.email || '' }
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+/**
+ * GET /transfer/owned-item-codes?product_id=&owner_id= — the QR code URLs for the
+ * specific product items (qrcode_ids) an owner holds via confirmed transfers.
+ * Used to show a normal user only the QR codes of the items they actually own.
+ */
+exports.ownedItemCodes = async (req: any, res: any, next: any) => {
+    try {
+        const productObjId = toObjectIdIfValid(req.query?.product_id);
+        const ownerObjId = toObjectIdIfValid(req.query?.owner_id);
+        if (!productObjId || !ownerObjId) {
+            return res.status(400).json({ status: 'fail', message: 'product_id and owner_id are required' });
+        }
+
+        const product = await Product.findById(productObjId).select('total_minted_amount').lean();
+        const totalMinted = product?.total_minted_amount || 0;
+
+        // Authoritative owned count — how many units this owner holds in the ledger.
+        const holding = await ProductHolding.findOne({
+            product_id: productObjId,
+            'owner.id': ownerObjId,
+            quantity: { $gt: 0 }
+        }).lean();
+        const heldQty = holding ? holding.quantity : 0;
+
+        // Prefer the specific items the owner obtained via confirmed transfers
+        // (those carry a qrcode_id), then fill up to the held quantity with the
+        // remaining product codes — units are fungible in the holdings ledger.
+        const transfers = await OwnershipTransfer.find({
+            product_id: productObjId,
+            'to_owner.id': ownerObjId,
+            status: 'confirmed',
+            qrcode_id: { $ne: null }
+        }).select('qrcode_id').lean();
+
+        const ids: number[] = [];
+        const seen = new Set<number>();
+        transfers.forEach((t: any) => {
+            const n = Number(t.qrcode_id);
+            if (Number.isFinite(n) && !seen.has(n)) { seen.add(n); ids.push(n); }
+        });
+        for (let i = 1; i <= totalMinted && ids.length < heldQty; i++) {
+            if (!seen.has(i)) { seen.add(i); ids.push(i); }
+        }
+        const finalIds = ids.slice(0, heldQty);
+
+        const base = webBaseUrl();
+        const data = finalIds.map((id) => `${base}/product/${encodeURIComponent(String(productObjId))}/${encodeURIComponent(String(id))}`);
+        return res.status(200).json({ status: 'success', data, qrcodeIds: finalIds, count: finalIds.length });
+    } catch (error) {
+        next(error);
+    }
+};
+
+/**
  * Owner-initiated transfer: an owner (or an admin acting for the current owner)
  * transfers `quantity` units of a product to a recipient email. If the recipient
  * is a registered user the holding is assigned to them immediately; otherwise an
@@ -584,6 +885,19 @@ exports.ownerInitiate = async (req: any, res: any, next: any) => {
             confirmed_at: new Date()
         });
 
+        // Notify a registered receiver that a product was transferred to them.
+        if (recipientUser && toOwner.id) {
+            await createNotification({
+                audience: 'user',
+                recipient: { kind: 'User', id: toOwner.id, name: toOwner.name, email: toOwner.email },
+                type: 'transfer_received',
+                level: 'success',
+                title: 'You received a product',
+                message: `${fromSnapshot.name || 'A sender'} transferred "${product.name}" to you${quantity > 1 ? ` (x${quantity})` : ''}.`,
+                data: { transferCode: transfer.code, productId: String(product._id), productName: product.name, quantity }
+            });
+        }
+
         let invited = false;
         if (toOwner.kind === 'Email') {
             try {
@@ -637,6 +951,72 @@ exports.myProducts = async (req: any, res: any, next: any) => {
 
         const products = await Product.find({ _id: { $in: productIds }, is_deleted: { $ne: true } }).lean();
         const data = products.map((p: any) => ({ ...p, heldQuantity: qtyMap[String(p._id)] || 0 }));
+
+        return res.status(200).json({ status: 'success', data });
+    } catch (error) {
+        next(error);
+    }
+};
+
+/**
+ * Products owned by an arbitrary owner (User or Company), each annotated with
+ * `heldQuantity` (units currently held). Powers the admin "Products" list and
+ * its per-product owned-count when a User or brand company is logged in.
+ *
+ * For a Company owner this also includes products the company created
+ * (company_id) whose seed holding hasn't been materialized yet — those count as
+ * the full minted amount, matching getPrimaryOwner's fallback.
+ */
+exports.ownedProducts = async (req: any, res: any, next: any) => {
+    try {
+        const ownerKind = req.query?.owner_kind === 'Company' ? 'Company' : 'User';
+        const ownerObjId = toObjectIdIfValid(req.query?.owner_id);
+        if (!ownerObjId) {
+            return res.status(400).json({ status: 'fail', message: 'owner_id is required' });
+        }
+
+        // Claim any email-invite holdings so a freshly registered user sees them.
+        if (ownerKind === 'User') {
+            const user = await User.findById(ownerObjId).lean();
+            if (user) await claimEmailHoldings(user);
+        }
+
+        const holdings = await ProductHolding.find({
+            'owner.kind': ownerKind,
+            'owner.id': ownerObjId,
+            quantity: { $gt: 0 }
+        }).lean();
+
+        const qtyMap: any = {};
+        const idSet = new Set<string>();
+        holdings.forEach((h: any) => {
+            qtyMap[String(h.product_id)] = h.quantity;
+            idSet.add(String(h.product_id));
+        });
+
+        // Brand company: also surface products it created (company_id).
+        if (ownerKind === 'Company') {
+            const created = await Product.find({ company_id: ownerObjId, is_deleted: { $ne: true } }).select('_id').lean();
+            created.forEach((p: any) => idSet.add(String(p._id)));
+        }
+
+        const ids = [...idSet].map((id) => new mongoose.Types.ObjectId(id));
+        const products = await Product.find({ _id: { $in: ids }, is_deleted: { $ne: true } })
+            .populate('company_id', 'name email')
+            .lean();
+
+        const data = products.map((p: any) => {
+            const pid = String(p._id);
+            let qty = qtyMap[pid];
+            if (qty == null) {
+                // No ledger row yet: a brand company holds the full minted amount.
+                const companyIdStr = String(p.company_id?._id || p.company_id || '');
+                qty = ownerKind === 'Company' && companyIdStr === String(ownerObjId)
+                    ? (p.total_minted_amount || 0)
+                    : 0;
+            }
+            return { ...p, heldQuantity: qty };
+        });
 
         return res.status(200).json({ status: 'success', data });
     } catch (error) {
