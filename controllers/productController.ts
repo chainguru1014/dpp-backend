@@ -316,12 +316,13 @@ exports.transfer = async(req: any, res: any, next: any) => {
             company_id: from_id,
             qrcode_id: token_id
         });
-        console.log(qr);
+        if (!qr) {
+            return res.status(404).json({ status: false, message: 'QR code not found' });
+        }
 
         qr.company_id = to_id;
+        await qr.save();
 
-        qr.save();
-        
         // @ts-ignore
         global.io.emit('Refresh user data');
 
@@ -335,17 +336,24 @@ exports.transfer = async(req: any, res: any, next: any) => {
 
 exports.printQRCodes = async (req: any, res: any, next: any) => {
     try {
-        const product = await Product.findById(req.params.id).populate('company_id');
-        if (product.total_minted_amount >= product.printed_amount + req.body.count) {
-            product.printed_amount += req.body.count;
-        } else {
-            product.printed_amount = product.total_minted_amount;
+        const product = await Product.findById(req.params.id);
+        if (!product) {
+            return res.status(404).json({ status: 'fail', message: 'Product not found' });
         }
-        product.save();
+        const count = Number(req.body.count) || 0;
+        const minted = product.total_minted_amount || 0;
+        const printed = product.printed_amount || 0;
+        const newPrinted = minted >= printed + count ? printed + count : minted;
+
+        // Atomic update instead of product.save() — older products with incomplete
+        // brandInfo would otherwise fail required-field validation, and an
+        // un-awaited save() crashed the process via an unhandled rejection.
+        await Product.updateOne({ _id: product._id }, { $set: { printed_amount: newPrinted } });
+        const updated = await Product.findById(product._id).populate('company_id').lean();
 
         res.status(200).json({
             status: 'success',
-            data: product
+            data: updated
         });
     } catch (error) {
         next(error);
