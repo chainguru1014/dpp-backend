@@ -30,7 +30,7 @@ const toObjectIdIfValid = (value: any) => {
 };
 
 const webBaseUrl = () => {
-    const base = process.env.PUBLIC_WEB_APP_URL || 'http://localhost:3001';
+    const base = process.env.PUBLIC_WEB_APP_URL || 'https://dpp.innosynch.com';
     return base.replace(/\/+$/, '');
 };
 

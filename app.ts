@@ -141,7 +141,7 @@ app.use('/product', productRoutes);
 // Serve uploaded files - use absolute path
 const path = require('path');
 const uploadsPath = path.join(__dirname, 'uploads');
-const remoteFilesBaseUrl = process.env.REMOTE_FILES_BASE_URL || 'http://82.165.217.122:5052/files';
+const remoteFilesBaseUrl = process.env.REMOTE_FILES_BASE_URL || 'https://api.innosynch.com/files';
 
 // File fallback: if local upload is missing, proxy it from the VPS file host.
 app.get('/files/:filename', async (req: any, res: any, next: any) => {

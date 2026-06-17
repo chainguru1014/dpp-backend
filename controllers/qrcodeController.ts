@@ -24,7 +24,7 @@ const resolveOwnerProductMatch = async (req: any) => {
 };
 
 const divcount = 20000;
-const PUBLIC_APP_URL = (process.env.PUBLIC_APP_URL || 'http://82.165.217.122:3000').replace(/\/+$/, '');
+const PUBLIC_APP_URL = (process.env.PUBLIC_APP_URL || 'https://dpp.innosynch.com').replace(/\/+$/, '');
 
 const buildPublicProductUrl = (productId: any, qrCodeId: any) => {
     return `${PUBLIC_APP_URL}/product/${encodeURIComponent(String(productId))}/${encodeURIComponent(String(qrCodeId))}`;
