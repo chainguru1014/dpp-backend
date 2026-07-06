@@ -7,9 +7,12 @@ const scanRecordSchema = new mongoose.Schema(
             ref: 'Product',
             required: true
         },
+        // Optional: barcode/NFC/RFID/GS1-DL resolved scans have no per-unit
+        // qrcode_id (a bare GTIN can't distinguish two physical units) — those
+        // rows are keyed by pmc_code alone instead.
         qrcode_id: {
             type: Number,
-            required: true
+            default: null
         },
         encrypt_data: {
             type: String,
@@ -51,6 +54,18 @@ const scanRecordSchema = new mongoose.Schema(
         security_qrcode_id: {
             type: Number,
             default: null
+        },
+        /** Canonical PMC for the scanned item, resolved at scan time — the join
+         *  key analytics/AI tooling should use instead of qrcode_id. */
+        pmc_code: {
+            type: String,
+            default: ''
+        },
+        /** Which identifier format this scan was captured from. */
+        identifier_type: {
+            type: String,
+            enum: ['qr', 'barcode', 'nfc', 'rfid', 'gs1dl'],
+            default: 'qr'
         }
     },
     {

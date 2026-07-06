@@ -19,5 +19,10 @@ const qrcodeSchema = new mongoose.Schema({
     }
 });
 
+// Guards against the mint-time ID reservation ever being bypassed (e.g. a
+// direct POST to the generic /qrcode CRUD route, or a future bug): the same
+// (product_id, qrcode_id) pair must never be created twice.
+qrcodeSchema.index({ product_id: 1, qrcode_id: 1 }, { unique: true });
+
 const QRcode = mongoose.model("QRcode", qrcodeSchema);
 module.exports = QRcode;

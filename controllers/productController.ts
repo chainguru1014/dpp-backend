@@ -7,6 +7,8 @@ const {v4:uuidv4} = require('uuid')
 const serialModal = require('../models/serialModal')
 const base = require('./baseController');
 const APIFeatures = require('../utils/apiFeatures');
+const { buildPublicProductUrl } = require('../utils/publicUrl');
+const { resolvePmc } = require('../services/pmcService');
 
 const divcount = 20000;
 const mintcount = 15000;
@@ -192,50 +194,69 @@ exports.addProduct = async(req: any, res: any, next: any) => {
 
 
 async function mintChildProduct(product_id:string,qrcode_id:number) {
-    try {
-        const products = await Product.find({parent:product_id})
+    const products = await Product.find({parent:product_id})
 
-        for(const product of products) {
-            const companyId = product?.company_id?._id || product?.company_id;
-            // Skip orphaned products that are missing a company reference.
-            if (!companyId) {
-                continue;
-            }
-            let start = new Date();
-            for(let j = 1;j<=product.parentCount;j++) {
-                await QRcode.create({
-                    product_id: product._id,
-                    company_id: companyId,
-                    qrcode_id: product.total_minted_amount + j,
-                    parent_qrcode_id:qrcode_id
-                })
-    
-                for(const serial of product.serials) {
-                    await serialModal.create({
-                        type:serial.type,
-                        serial:uuidv4(),
-                        qrcode_id:product.total_minted_amount + j,
-                        product_id:product._id,
-                        company_id: companyId,
-                        parent_qrcode_id:qrcode_id
-                    })
-                }
-
-                const productInfos = await Product.find({parent:product._id})
-
-                if(productInfos.length) {
-                    mintChildProduct(product._id,product.total_minted_amount + j)
-                }
-            }
-
-            // Previously, blockchain minting happened here. Now we only create QR codes and serials in the database.
-            
+    for(const product of products) {
+        const companyId = product?.company_id?._id || product?.company_id;
+        // Skip orphaned products that are missing a company reference.
+        if (!companyId) {
+            continue;
         }
 
+        const childAmount = product.parentCount || 0;
+        if (childAmount <= 0) {
+            continue;
+        }
 
-    }
-    catch(error) {
+        // Atomically reserve this child product's qrcode_id range the same way
+        // the top-level mint() does. Without this, re-minting the parent (or two
+        // concurrent mints) would read a stale total_minted_amount for the child
+        // every time and hand out qrcode_ids that were already used.
+        const reserved = await Product.findOneAndUpdate(
+            { _id: product._id },
+            { $inc: { total_minted_amount: childAmount } },
+            { new: false }
+        );
+        const startOffset = reserved?.total_minted_amount || 0;
 
+        for(let j = 1;j<=childAmount;j++) {
+            await QRcode.create({
+                product_id: product._id,
+                company_id: companyId,
+                qrcode_id: startOffset + j,
+                parent_qrcode_id:qrcode_id
+            })
+
+            // Give this item a PMC immediately, keyed off the same URL its
+            // printed QR code will carry, so a later scan of that QR resolves
+            // to the same PMC instead of minting a second one.
+            await resolvePmc({
+                product_id: product._id,
+                company_id: companyId,
+                qrcode_id: startOffset + j,
+                source_type: 'qr',
+                raw_value: buildPublicProductUrl(product._id, startOffset + j)
+            })
+
+            for(const serial of product.serials) {
+                await serialModal.create({
+                    type:serial.type,
+                    serial:uuidv4(),
+                    qrcode_id: startOffset + j,
+                    product_id:product._id,
+                    company_id: companyId,
+                    parent_qrcode_id:qrcode_id
+                })
+            }
+
+            const productInfos = await Product.find({parent:product._id})
+
+            if(productInfos.length) {
+                await mintChildProduct(product._id, startOffset + j)
+            }
+        }
+
+        // Previously, blockchain minting happened here. Now we only create QR codes and serials in the database.
     }
 }
 
@@ -260,18 +281,42 @@ exports.mint = async(req: any, res: any, next: any) => {
             return next(new AppError(400, 'fail', 'amount must be a positive integer'), req, res, next);
         }
 
+        // Atomically reserve [startOffset+1, startOffset+mintAmount] for this mint
+        // call up front (instead of reading total_minted_amount once and using it
+        // through the loop) so two concurrent/duplicate mint requests for the same
+        // product can never be handed overlapping qrcode_id ranges. A failure
+        // partway through the loop below only leaves gaps in the reserved range,
+        // never a collision.
+        const reserved = await Product.findOneAndUpdate(
+            { _id: product._id },
+            { $inc: { total_minted_amount: mintAmount } },
+            { new: false }
+        );
+        const startOffset = reserved?.total_minted_amount || 0;
+
         for (let j = 1; j <= mintAmount; j ++ ) {
             await QRcode.create({
                 product_id: product._id,
                 company_id: companyId,
-                qrcode_id: product.total_minted_amount + j
+                qrcode_id: startOffset + j
+            })
+
+            // Give this item a PMC immediately, keyed off the same URL its
+            // printed QR code will carry, so a later scan of that QR resolves
+            // to the same PMC instead of minting a second one.
+            await resolvePmc({
+                product_id: product._id,
+                company_id: companyId,
+                qrcode_id: startOffset + j,
+                source_type: 'qr',
+                raw_value: buildPublicProductUrl(product._id, startOffset + j)
             })
 
             for(const serial of product.serials) {
                 await serialModal.create({
                     type:serial.type,
                     serial:uuidv4(),
-                    qrcode_id:product.total_minted_amount + j,
+                    qrcode_id: startOffset + j,
                     product_id:product._id,
                     company_id: companyId,
                 })
@@ -280,27 +325,20 @@ exports.mint = async(req: any, res: any, next: any) => {
             const products = await Product.find({parent:product._id})
 
             if(products.length > 0) {
-                mintChildProduct(product._id,product.total_minted_amount + j)
+                await mintChildProduct(product._id, startOffset + j)
             }
 
-            
+
         }
         let end = new Date();
         console.log(end.getTime() - start.getTime())
-
-        // Update total minted amount purely in the database (no blockchain interaction).
-        // Use an atomic $inc instead of product.save() so we don't re-validate the
-        // whole document — older products with incomplete brandInfo would otherwise
-        // fail required-field validation on every mint.
-        const newTotal = (product.total_minted_amount || 0) + mintAmount;
-        await Product.updateOne({ _id: product._id }, { $inc: { total_minted_amount: mintAmount } });
 
         // @ts-ignore
         global.io.emit('Refresh product data');
 
         res.status(200).json({
             status: 'success',
-            offset: newTotal,
+            offset: startOffset + mintAmount,
         });
     } catch (error) {
         next(error);

@@ -6,12 +6,16 @@ const Company = require('../models/companyModel');
 const ScanRecord = require('../models/scanRecordModel');
 const User = require('../models/userModel');
 const ProductReaction = require('../models/productReactionModel');
+const PMC = require('../models/pmcModel');
 const base = require('./baseController');
 const APIFeatures = require('../utils/apiFeatures');
 const { encrypt, decrypt } = require('../utils/helper');
 const { getOwnedProductIds } = require('../utils/ownership');
 const qrcode = require('qrcode');
 const mongoose = require('mongoose');
+const { buildPublicProductUrl, extractProductFromQrUrl } = require('../utils/publicUrl');
+const { normalizeProductMedia } = require('../utils/productMedia');
+const { resolvePmc } = require('../services/pmcService');
 
 // Resolve an optional owner scope (owner_kind + owner_id) from a request into a
 // product_id $in filter. Returns null when no owner scope is requested.
@@ -24,44 +28,6 @@ const resolveOwnerProductMatch = async (req: any) => {
 };
 
 const divcount = 20000;
-const PUBLIC_APP_URL = (process.env.PUBLIC_APP_URL || 'https://dpp.innosynch.com').replace(/\/+$/, '');
-
-const buildPublicProductUrl = (productId: any, qrCodeId: any) => {
-    return `${PUBLIC_APP_URL}/product/${encodeURIComponent(String(productId))}/${encodeURIComponent(String(qrCodeId))}`;
-};
-
-const extractProductFromQrUrl = (qrUrl: string) => {
-    if (!qrUrl || typeof qrUrl !== 'string') {
-        return null;
-    }
-
-    let normalizedUrl = String(qrUrl).trim();
-
-    // Support wrapped format:
-    //   http://localhost:3000?qrcode=https%3A%2F%2Fhost%2Fproduct%2F:id%2F:qrcodeId
-    const qrcodeParamIndex = normalizedUrl.indexOf('qrcode=');
-    if (qrcodeParamIndex >= 0) {
-        const encodedValue = normalizedUrl.substring(qrcodeParamIndex + 'qrcode='.length).split('&')[0];
-        try {
-            normalizedUrl = decodeURIComponent(encodedValue);
-        } catch (error) {
-            normalizedUrl = encodedValue;
-        }
-    }
-
-    const match = normalizedUrl.match(/\/product\/([^/?#]+)\/([^/?#]+)/i);
-    if (!match) {
-        return null;
-    }
-
-    const productId = decodeURIComponent(match[1]);
-    const qrcodeId = Number(decodeURIComponent(match[2]));
-    if (!productId || !Number.isFinite(qrcodeId)) {
-        return null;
-    }
-
-    return { productId, qrcodeId };
-};
 
 const getPublicProductPayload = async (productId: any, qrcodeId: any) => {
     const numericQrId = Number(qrcodeId);
@@ -84,6 +50,23 @@ const getPublicProductPayload = async (productId: any, qrcodeId: any) => {
     const scannedQRCode = buildPublicProductUrl(productId, numericQrId);
     const qrcodeImage = await qrcode.toDataURL(scannedQRCode);
 
+    // Every scanned item should resolve to a PMC. Items minted before the PMC
+    // feature existed won't have one yet, so resolvePmc() lazily creates it
+    // here (find-or-create is idempotent — later scans just return the same one).
+    let pmc_code = null;
+    try {
+        const pmc = await resolvePmc({
+            product_id: productId,
+            company_id: qrcodeData.company_id?._id || qrcodeData.company_id,
+            qrcode_id: numericQrId,
+            source_type: 'qr',
+            raw_value: scannedQRCode
+        });
+        pmc_code = pmc?.pmc_code || null;
+    } catch (error) {
+        console.error('PMC resolution failed for scan:', error);
+    }
+
     return {
         token_id: numericQrId,
         location: qrcodeData.company_id?.location || '',
@@ -96,74 +79,11 @@ const getPublicProductPayload = async (productId: any, qrcodeId: any) => {
         } : null,
         qrcode_img: qrcodeImage,
         serialInfos: serials,
-        scannedQRCode
+        scannedQRCode,
+        pmc_code
     };
 };
 
-const toStringArray = (value: any): string[] => {
-    if (value == null) {
-        return [];
-    }
-
-    if (Array.isArray(value)) {
-        return value.flatMap((item: any) => toStringArray(item));
-    }
-
-    if (typeof value === 'string') {
-        const trimmed = value.trim();
-        return trimmed ? [trimmed] : [];
-    }
-
-    if (typeof value === 'object') {
-        return Object.values(value).flatMap((item: any) => toStringArray(item));
-    }
-
-    return [];
-};
-
-const toArray = (value: any): any[] => {
-    if (value == null) {
-        return [];
-    }
-    if (Array.isArray(value)) {
-        return value;
-    }
-    if (typeof value === 'object') {
-        return Object.values(value);
-    }
-    return [value];
-};
-
-const normalizeProductMedia = (productDoc: any) => {
-    if (!productDoc || typeof productDoc !== 'object') {
-        return productDoc;
-    }
-
-    const normalized = { ...productDoc };
-    normalized.images = toStringArray(productDoc.images);
-    normalized.files = toStringArray(productDoc.files);
-    normalized.videos = toArray(productDoc.videos);
-
-    if (productDoc.warrantyAndGuarantee && typeof productDoc.warrantyAndGuarantee === 'object') {
-        normalized.warrantyAndGuarantee = {
-            ...productDoc.warrantyAndGuarantee,
-            images: toStringArray(productDoc.warrantyAndGuarantee.images),
-            files: toStringArray(productDoc.warrantyAndGuarantee.files),
-            videos: toArray(productDoc.warrantyAndGuarantee.videos)
-        };
-    }
-
-    if (productDoc.manualsAndCerts && typeof productDoc.manualsAndCerts === 'object') {
-        normalized.manualsAndCerts = {
-            ...productDoc.manualsAndCerts,
-            images: toStringArray(productDoc.manualsAndCerts.images),
-            files: toStringArray(productDoc.manualsAndCerts.files),
-            videos: toArray(productDoc.manualsAndCerts.videos)
-        };
-    }
-
-    return normalized;
-};
 
 exports.getAllQRcodes = base.getAll(QRcode);
 exports.getQRcode = base.getOne(QRcode);
@@ -247,39 +167,19 @@ exports.decrypt = async (req: any, res: any, next: any) => {
         console.log(data);
 
         if(data.product_id) {
-            const qrcodeData = await QRcode.findOne({product_id: data.product_id, qrcode_id: data.token_id}).populate('company_id');
-            console.log(qrcodeData);
-
-            if (!qrcodeData) {
-                return res.status(404).json({
-                    status: 'fail',
-                    message: 'QR code data not found'
-                });
-            }
-
-            const product = await Product.findById(data.product_id);
-            if (!product) {
+            // Reuse the same resolver the URL-format flow uses (getPublicProductPayload)
+            // so both scan formats agree on shape and both resolve/attach a PMC.
+            const payload = await getPublicProductPayload(data.product_id, data.token_id);
+            if (!payload) {
                 return res.status(404).json({
                     status: 'fail',
                     message: 'Product not found'
                 });
             }
-            const serials = await Serials.find({product_id:data.product_id,qrcode_id:data.token_id});
-            const normalizedProduct = normalizeProductMedia(product?._doc || {});
 
-            const qrcodeImage = await qrcode.toDataURL(buildPublicProductUrl(data.product_id, data.token_id));
-
-            const resData = {
-                token_id: data.token_id,
-                location: qrcodeData.company_id?.location || '',
-                ...normalizedProduct,
-                qrcode_img: qrcodeImage,
-                serialInfos:serials
-            };
-            
             res.status(200).json({
                 status: 'success',
-                data: resData,
+                data: payload,
                 type: 'Product'
             });
         } else if (data.user_id) {
@@ -326,13 +226,19 @@ exports.decrypt = async (req: any, res: any, next: any) => {
 
 exports.recordScan = async (req: any, res: any, next: any) => {
     try {
-        const { product_id, token_id, encryptData, user_id, source, location, security_verified, security_qrcode_id } = req.body || {};
+        const { product_id, token_id, pmc_code: pmcCodeFromClient, identifier_type, encryptData, user_id, source, location, security_verified, security_qrcode_id } = req.body || {};
         const sourceNorm = String(source || 'scan').toLowerCase() === 'visit' ? 'visit' : 'scan';
+        const IDENTIFIER_TYPES = ['qr', 'barcode', 'nfc', 'rfid', 'gs1dl'];
+        const identifierTypeNorm = IDENTIFIER_TYPES.includes(identifier_type) ? identifier_type : 'qr';
 
-        if (!product_id || token_id == null || !encryptData) {
+        // token_id is only present for items minted through this platform —
+        // barcode/NFC/RFID/GS1-DL resolved scans have no per-unit qrcode_id and
+        // instead carry whatever pmc_code the client already resolved via
+        // pmc/lookup.
+        if (!product_id || !encryptData) {
             return res.status(400).json({
                 status: 'fail',
-                message: 'product_id, token_id and encryptData are required'
+                message: 'product_id and encryptData are required'
             });
         }
 
@@ -353,17 +259,43 @@ exports.recordScan = async (req: any, res: any, next: any) => {
             source: location.source || (location.latitude != null ? 'gps' : '')
         } : undefined;
 
+        // Best-effort: stamp the scan with its PMC so analytics/AI tooling can
+        // key off one canonical code instead of qrcode_id. Never blocks recording
+        // the scan itself if PMC resolution fails for any reason.
+        let pmc_code = '';
+        try {
+            if (token_id != null) {
+                const qrcodeDoc = await QRcode.findOne({ product_id, qrcode_id: Number(token_id) });
+                if (qrcodeDoc?.company_id) {
+                    const pmc = await resolvePmc({
+                        product_id,
+                        company_id: qrcodeDoc.company_id,
+                        qrcode_id: Number(token_id),
+                        source_type: 'qr',
+                        raw_value: buildPublicProductUrl(product_id, token_id)
+                    });
+                    pmc_code = pmc?.pmc_code || '';
+                }
+            } else if (pmcCodeFromClient) {
+                pmc_code = String(pmcCodeFromClient);
+            }
+        } catch (error) {
+            console.error('PMC resolution failed for recordScan:', error);
+        }
+
         await ScanRecord.create({
             product_id,
-            qrcode_id: Number(token_id),
+            qrcode_id: token_id != null ? Number(token_id) : undefined,
             encrypt_data: String(encryptData),
             user_id: user_id || undefined,
             scanned_at: new Date(),
             source: sourceNorm,
+            identifier_type: identifierTypeNorm,
             ip,
             location: loc,
             security_verified: typeof security_verified === 'boolean' ? security_verified : null,
-            security_qrcode_id: security_qrcode_id != null ? Number(security_qrcode_id) : null
+            security_qrcode_id: security_qrcode_id != null ? Number(security_qrcode_id) : null,
+            pmc_code
         });
 
         return res.status(201).json({
@@ -453,7 +385,8 @@ exports.getScanHistory = async (req: any, res: any, next: any) => {
                     $or: [
                         { 'user.name': rx }, { 'user.email': rx },
                         { 'product.name': rx }, { 'product.model': rx },
-                        { ip: rx }, { 'location.city': rx }, { 'location.country': rx }
+                        { ip: rx }, { 'location.city': rx }, { 'location.country': rx },
+                        { pmc_code: rx }
                     ]
                 }
             });
@@ -467,7 +400,7 @@ exports.getScanHistory = async (req: any, res: any, next: any) => {
                     {
                         $project: {
                             _id: 1, scanned_at: 1, source: 1, ip: 1, location: 1,
-                            security_verified: 1, security_qrcode_id: 1, qrcode_id: 1,
+                            security_verified: 1, security_qrcode_id: 1, qrcode_id: 1, pmc_code: 1,
                             like: 1, dislike: 1, buy: 1,
                             user: {
                                 _id: '$user._id', name: '$user.name', email: '$user.email',
@@ -511,7 +444,7 @@ exports.getAnalytics = async (req: any, res: any, next: any) => {
         const [
             totalScans, totalUsers, totalCompanies, totalProducts,
             uniqueScannerIds, byDayAgg, sourceAgg, securityAgg, reactionsAgg,
-            loggedInScans, topProductsAgg, topBrandsAgg
+            loggedInScans, topProductsAgg, topBrandsAgg, identifierTypeAgg, uniquePmcCodes
         ] = await Promise.all([
             ScanRecord.countDocuments({ ...pFilter }),
             User.countDocuments({ role: 'User' }),
@@ -543,7 +476,9 @@ exports.getAnalytics = async (req: any, res: any, next: any) => {
                 { $lookup: { from: 'companies', localField: '_id', foreignField: '_id', as: 'c' } },
                 { $unwind: { path: '$c', preserveNullAndEmptyArrays: true } },
                 { $project: { name: { $ifNull: ['$c.name', 'Unknown'] }, count: 1 } }
-            ])
+            ]),
+            ScanRecord.aggregate([...scanScopeStage, { $group: { _id: '$identifier_type', count: { $sum: 1 } } }]),
+            ScanRecord.distinct('pmc_code', { pmc_code: { $nin: [null, ''] }, ...pFilter })
         ]);
 
         const dayMap: any = {};
@@ -569,6 +504,13 @@ exports.getAnalytics = async (req: any, res: any, next: any) => {
         const reactions: any = { like: 0, dislike: 0, buy: 0 };
         reactionsAgg.forEach((r: any) => { if (reactions[r._id] !== undefined) reactions[r._id] = r.count; });
 
+        // How scanned items were identified — qr (this platform's own minted
+        // codes) vs. barcode/nfc/rfid/gs1dl (externally captured, resolved via
+        // the ProductIdentifier mapping). This is the PMC-era view of "Source"
+        // above, which only distinguishes scan-vs-visit.
+        const identifierTypes: any = { qr: 0, barcode: 0, nfc: 0, rfid: 0, gs1dl: 0 };
+        identifierTypeAgg.forEach((i: any) => { if (identifierTypes[i._id] !== undefined) identifierTypes[i._id] = i.count; });
+
         return res.status(200).json({
             status: 'success',
             data: {
@@ -577,12 +519,14 @@ exports.getAnalytics = async (req: any, res: any, next: any) => {
                     users: totalUsers,
                     companies: totalCompanies,
                     products: totalProducts,
-                    uniqueScanners: (uniqueScannerIds || []).filter(Boolean).length
+                    uniqueScanners: (uniqueScannerIds || []).filter(Boolean).length,
+                    uniquePmcs: (uniquePmcCodes || []).filter(Boolean).length
                 },
                 scansByDay,
                 source,
                 security,
                 reactions,
+                identifierTypes,
                 audience: { loggedIn: loggedInScans, guest: Math.max(0, totalScans - loggedInScans) },
                 topProducts: topProductsAgg,
                 topBrands: topBrandsAgg
@@ -633,6 +577,7 @@ exports.getScannedProducts = async (req: any, res: any, next: any) => {
             return {
                 ...normalizedProduct,
                 token_id: record.latest?.qrcode_id,
+                pmc_code: record.latest?.pmc_code || null,
                 scannedAt: new Date(record.latest?.scanned_at || Date.now()).getTime(),
                 scannedQRCode: record.latest?.encrypt_data || '',
                 visitSource: record.latest?.source === 'visit' ? 'visit' : 'scan'
@@ -720,42 +665,50 @@ exports.getSerials = async(req:any, res:any, next:any) => {
             // const doc = await QRcode.find({ product_id: req.body.product_id }).skip(req.body.offset).limit(req.body.amount);
             const product = await Product.findById(req.body.product_id)
             const serials = await Serials.find({product_id:req.body.product_id})
-    
+            // One PMC per (product_id, qrcode_id) — fetched once for the whole
+            // product and matched by qrcode_id below so the admin UI/print
+            // export can display it alongside each item's other identifiers
+            // without any change on their end (they just render whatever
+            // {type, serial} pairs this endpoint returns per item).
+            const pmcs = await PMC.find({ product_id: req.body.product_id });
+            const pmcByQrcodeId = new Map(pmcs.map((pmc: any) => [pmc.qrcode_id, pmc.pmc_code]));
+
+            const withPmc = (qrcodeId: number, list: any[]) => {
+                const pmcCode = pmcByQrcodeId.get(qrcodeId);
+                return pmcCode ? [...list, { type: 'PMC Code', serial: pmcCode }] : list;
+            };
+
             let data = [];
             let count = 100;
-            
+
             if (req.body.page == 0) {
-                
+
                 for (let i = req.body.from; i <= req.body.to; i ++) {
                     if (i > 0 && i <= product.total_minted_amount) {
                         let serial = serials.filter((item:any)=>item.qrcode_id === i)
-                        data.push(serial);
+                        data.push(withPmc(i, serial));
                     }
                 }
             } else if (req.body.page > 0) {
                 if (req.body.page == Math.ceil(product.total_minted_amount / 100) && product.total_minted_amount % 100) {
                     count = product.total_minted_amount % 100;
-                } 
+                }
                 else if (req.body.page > Math.ceil(product.total_minted_amount / 100)) {
                     count = 0;
                 }
-                
-                for (let i = 1; i <= count; i ++) {
-                    const stringdata = JSON.stringify({
-                        product_id: product._id,
-                        token_id: (req.body.page - 1) * 100 + i
-                    });
 
-                    let serial = serials.filter((item:any)=>item.qrcode_id === ((req.body.page - 1) * 100 + i))
-                    data.push(serial);
+                for (let i = 1; i <= count; i ++) {
+                    const qrcodeId = (req.body.page - 1) * 100 + i;
+                    let serial = serials.filter((item:any)=>item.qrcode_id === qrcodeId)
+                    data.push(withPmc(qrcodeId, serial));
                 }
             }
-    
+
             res.status(200).json({
                 status: 'success',
                 data
             });
-            
+
         } catch (error) {
             next(error);
         }
