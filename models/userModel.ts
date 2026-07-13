@@ -6,9 +6,12 @@ const userSchema = new mongoose.Schema({
         unique: true,
         sparse: true  // Allows multiple null values, but enforces uniqueness for non-null values
     },
+    // Legacy/inert: passwordless auth (Google/Apple/email OTP) replaced
+    // password-based login. Field kept schema-only for backward compatibility
+    // with old records — never read or compared anywhere anymore.
     password: {
         type: String,
-        required: false  // Not required for Google OAuth users
+        required: false
     },
     role: {
         type: String,
@@ -92,6 +95,31 @@ const userSchema = new mongoose.Schema({
         sparse: true
     },
     isGoogleUser: {
+        type: Boolean,
+        default: false
+    },
+    appleId: {
+        type: String,
+        sparse: true
+    },
+    // OTP fields for passwordless email sign-in. otpCode is select:false so it
+    // never comes back on normal reads/find() — controllers must explicitly
+    // .select('+otpCode') to read it.
+    otpCode: {
+        type: String,
+        select: false
+    },
+    otpExpiresAt: {
+        type: Date
+    },
+    otpAttempts: {
+        type: Number,
+        default: 0
+    },
+    otpResendAt: {
+        type: Date
+    },
+    emailVerified: {
         type: Boolean,
         default: false
     },

@@ -12,12 +12,17 @@ const companySchema = new mongoose.Schema({
         enum: ['super', 'company'],
         default: 'company'
     },
+    // Legacy/inert-for-passwordless-accounts: previously required for all
+    // companies, but Google/Apple/OTP-linked companies never set one. No
+    // longer required — never read/compared for those accounts.
     password: {
         type: String,
-        require: true
+        required: false
     },
     email: {
-        type: String
+        type: String,
+        unique: true,
+        sparse: true
     },
     title: {
         type: String
@@ -50,6 +55,36 @@ const companySchema = new mongoose.Schema({
         type: Array
     },
     isVerified: {
+        type: Boolean,
+        default: false
+    },
+    // Passwordless auth linking — mirrors the fields added to userModel so a
+    // Company (brand/admin) account can also sign in via Google/Apple/OTP.
+    // Companies are never auto-created by these flows; only linked when an
+    // email already matches an existing Company document.
+    googleId: {
+        type: String,
+        sparse: true
+    },
+    appleId: {
+        type: String,
+        sparse: true
+    },
+    otpCode: {
+        type: String,
+        select: false
+    },
+    otpExpiresAt: {
+        type: Date
+    },
+    otpAttempts: {
+        type: Number,
+        default: 0
+    },
+    otpResendAt: {
+        type: Date
+    },
+    emailVerified: {
         type: Boolean,
         default: false
     }

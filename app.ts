@@ -16,12 +16,18 @@ const engagementRoutes = require('./routes/engagementRoutes');
 const transferRoutes = require('./routes/transferRoutes');
 const uploadRoutes = require('./routes/uploadRoutes');
 const userRoutes = require('./routes/userRoutes');
+const authRoutes = require('./routes/authRoutes');
 const notificationRoutes = require('./routes/notificationRoutes');
 const aiRoutes = require('./routes/aiRoutes');
 const pmcRoutes = require('./routes/pmcRoutes');
 const productIdentifierRoutes = require('./routes/productIdentifierRoutes');
 const globalErrHandler = require('./controllers/errorController');
 const AppError = require('./utils/appError');
+
+// Fail fast rather than silently signing JWTs with an insecure default secret.
+if (!process.env.JWT_SECRET) {
+    throw new Error('JWT_SECRET is required');
+}
 
 const app = express();
 
@@ -72,6 +78,7 @@ app.use('/company', companyRoutes);
 app.use('/upload', uploadRoutes);
 app.use('/qrcode', qrcodeRoutes);
 app.use('/user', userRoutes);
+app.use('/auth', authRoutes);
 app.use('/engagement', engagementRoutes);
 app.use('/transfer', transferRoutes);
 app.use('/notification', notificationRoutes);

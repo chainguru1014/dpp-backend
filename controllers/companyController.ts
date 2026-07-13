@@ -92,6 +92,10 @@ exports.getProductsByCompanyId = async(req:any,res:any,next:any) => {
     }
 }
 
+// @deprecated Password-based company/brand login. Superseded for passwordless
+// sign-in by /auth/google, /auth/apple, /auth/otp/* (which link to an
+// existing Company by email but never auto-create one). Kept mounted so
+// already-installed app/web builds don't hard-break mid-rollout.
 exports.login = async(req: any, res: any, next: any) => {
     try {
         console.log("login")

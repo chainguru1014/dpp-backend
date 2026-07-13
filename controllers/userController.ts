@@ -3,23 +3,8 @@ const Company = require('../models/companyModel');
 const Product = require('../models/productModel');
 const ScanRecord = require('../models/scanRecordModel');
 const AppError = require('../utils/appError');
-const jwt = require('jsonwebtoken');
-const { claimEmailHoldings } = require('../utils/ownership');
-
-/**
- * Claim any product holdings that were transferred to this user's email address
- * while they were unregistered (Email-kind holdings). Called on register/login so
- * a receiver owns transferred products the moment they authenticate with the
- * matching email, whether from the mobile app or the admin panel. Never blocks
- * authentication if claiming fails.
- */
-const claimHoldingsForUser = async (user: any) => {
-    try {
-        await claimEmailHoldings(user);
-    } catch (err) {
-        console.error('claimEmailHoldings failed:', err);
-    }
-};
+const { buildUserResponse, claimHoldingsForUser, signJwt } = require('../utils/authShared');
+const AuthController = require('./authController');
 
 const normalizeUsername = (value: any) => (typeof value === 'string' ? value.trim() : '');
 
@@ -33,30 +18,6 @@ const findExistingNormalUserByName = async (name: string) => {
         name: { $regex: `^${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, $options: 'i' }
     });
 };
-
-const buildUserResponse = (user: any) => ({
-    _id: user._id,
-    name: user.name,
-    email: user.email,
-    avatar: user.avatar,
-    role: user.role,
-    wallet: user.wallet,
-    userType: user.userType,
-    gender: user.gender,
-    age: user.age,
-    country: user.country,
-    firstName: user.firstName,
-    lastName: user.lastName,
-    dateOfBirth: user.dateOfBirth,
-    address: user.address,
-    addressStreet: user.addressStreet,
-    addressCity: user.addressCity,
-    addressState: user.addressState,
-    addressZipCode: user.addressZipCode,
-    addressCountry: user.addressCountry,
-    phoneNumber: user.phoneNumber,
-    profileCompleted: user.profileCompleted
-});
 
 /**
  * Admin-only endpoint that returns all users and companies.
@@ -187,6 +148,9 @@ exports.updateUser = async (req: any, res: any, next: any) => {
     }
 };
 
+// @deprecated Password-based login. Superseded by passwordless auth
+// (/auth/google, /auth/apple, /auth/otp/*) — kept mounted so already-installed
+// app builds don't hard-break mid-rollout. Do not build new features on this.
 // Mobile app login endpoint - uses User table
 exports.login = async (req: any, res: any, next: any) => {
     try {
@@ -213,11 +177,7 @@ exports.login = async (req: any, res: any, next: any) => {
         await claimHoldingsForUser(user);
 
         // Generate JWT token
-        const token = jwt.sign(
-            { id: user._id, name: user.name },
-            process.env.JWT_SECRET || 'default-secret',
-            { expiresIn: process.env.JWT_EXPIRES_IN || '1d' }
-        );
+        const token = signJwt({ id: user._id, name: user.name, actorKind: 'User' });
 
         const userData = buildUserResponse(user);
 
@@ -252,6 +212,9 @@ exports.checkUsername = async (req: any, res: any, next: any) => {
     }
 };
 
+// @deprecated Password-based registration. Superseded by passwordless auth
+// (/auth/google, /auth/apple, /auth/otp/* + /auth/profile/complete) — kept
+// mounted so already-installed app builds don't hard-break mid-rollout.
 // Mobile app register endpoint - uses User table
 exports.register = async (req: any, res: any, next: any) => {
     try {
@@ -359,11 +322,7 @@ exports.register = async (req: any, res: any, next: any) => {
         await claimHoldingsForUser(newUser);
 
         // Generate JWT token
-        const token = jwt.sign(
-            { id: newUser._id, name: newUser.name },
-            process.env.JWT_SECRET || 'default-secret',
-            { expiresIn: process.env.JWT_EXPIRES_IN || '1d' }
-        );
+        const token = signJwt({ id: newUser._id, name: newUser.name, actorKind: 'User' });
 
         const userData = buildUserResponse(newUser);
 
@@ -378,79 +337,30 @@ exports.register = async (req: any, res: any, next: any) => {
     }
 };
 
-// Google OAuth login endpoint
-exports.googleLogin = async (req: any, res: any, next: any) => {
-    try {
-        const { accessToken } = req.body;
-
-        if (!accessToken) {
-            return res.status(400).json({
-                status: 'fail',
-                message: 'Please provide Google access token'
-            });
-        }
-
-        // Verify Google token and get user info
-        const googleResponse = await fetch(`https://www.googleapis.com/oauth2/v2/userinfo?access_token=${accessToken}`);
-        
-        if (!googleResponse.ok) {
-            return res.status(401).json({
-                status: 'fail',
-                message: 'Invalid Google access token'
-            });
-        }
-
-        const googleUser = await googleResponse.json();
-
-        // Check if user already exists
-        let user = await User.findOne({ email: googleUser.email });
-
-        if (user) {
-            // Update Google ID if not set
-            if (!user.googleId) {
-                user.googleId = googleUser.id;
-                user.isGoogleUser = true;
-                await user.save();
-            }
-        } else {
-            // Create new user from Google account
-            user = await User.create({
-                name: googleUser.name || googleUser.email.split('@')[0],
-                email: googleUser.email,
-                avatar: googleUser.picture,
-                googleId: googleUser.id,
-                isGoogleUser: true,
-                userType: 'client', // Default to client
-                role: 'User',
-                isApproved: false,
-                profileCompleted: false,
-                password: 'google'
-            });
-        }
-
-        // Claim any products transferred to this email before the receiver signed in.
-        await claimHoldingsForUser(user);
-
-        // Generate JWT token
-        const token = jwt.sign(
-            { id: user._id, name: user.name },
-            process.env.JWT_SECRET || 'default-secret',
-            { expiresIn: process.env.JWT_EXPIRES_IN || '1d' }
-        );
-
-        const userData = buildUserResponse(user);
-
-        res.status(200).json({
-            status: 'success',
-            token,
-            user: userData,
-            message: user.profileCompleted ? 'Login successful' : 'Profile completion required'
-        });
-    } catch (error) {
-        next(error);
+// @deprecated Google OAuth login endpoint. Superseded by POST /auth/google.
+// Delegates to the same verified-ID-token path — this endpoint used to trust
+// a client-supplied Google *access* token via a raw, unauthenticated fetch to
+// Google's userinfo endpoint (no audience/signature verification), which was
+// a real vulnerability. It now requires the same `idToken` body field and
+// verified-signature/audience check as /auth/google. Kept mounted only so
+// already-installed app builds don't hard-break mid-rollout; clients should
+// migrate to /auth/google.
+exports.googleLogin = (req: any, res: any, next: any) => {
+    // Best-effort compat: some older builds may post the token under
+    // `accessToken`. Remapping the field name does not reintroduce the old
+    // vulnerability — verifyIdToken() still cryptographically verifies the
+    // value as a signed Google ID token and rejects anything else (including
+    // a real OAuth access token, which isn't a JWT at all).
+    if (!req.body.idToken && req.body.accessToken) {
+        req.body.idToken = req.body.accessToken;
     }
+    return AuthController.google(req, res, next);
 };
 
+// @deprecated Complete Google profile endpoint. Superseded by
+// POST /auth/profile/complete (JWT-authenticated, works for Google/Apple/OTP
+// signups alike). Kept mounted so already-installed app builds don't
+// hard-break mid-rollout.
 // Complete Google profile endpoint
 exports.completeGoogleProfile = async (req: any, res: any, next: any) => {
     try {
@@ -488,11 +398,7 @@ exports.completeGoogleProfile = async (req: any, res: any, next: any) => {
         await user.save();
 
         // Generate new JWT token
-        const token = jwt.sign(
-            { id: user._id, name: user.name },
-            process.env.JWT_SECRET || 'default-secret',
-            { expiresIn: process.env.JWT_EXPIRES_IN || '1d' }
-        );
+        const token = signJwt({ id: user._id, name: user.name, actorKind: 'User' });
 
         const userData = buildUserResponse(user);
 
@@ -600,11 +506,7 @@ exports.updateProfile = async (req: any, res: any, next: any) => {
             });
         }
 
-        const token = jwt.sign(
-            { id: user._id, name: user.name },
-            process.env.JWT_SECRET || 'default-secret',
-            { expiresIn: process.env.JWT_EXPIRES_IN || '1d' }
-        );
+        const token = signJwt({ id: user._id, name: user.name, actorKind: 'User' });
 
         res.status(200).json({
             status: 'success',
