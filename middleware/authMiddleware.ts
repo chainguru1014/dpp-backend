@@ -25,7 +25,11 @@ exports.protect = (req: any, res: any, next: any) => {
         req.user = {
             id: decoded.id,
             actorKind: decoded.actorKind || 'User',
-            name: decoded.name
+            name: decoded.name,
+            // Only meaningful for actorKind 'Employee' — carries the RBAC role
+            // (staff/manager/admin) so restrictToEmployeeRole can check it
+            // without a DB round-trip on every request.
+            role: decoded.role
         };
         next();
     } catch (err) {
@@ -39,4 +43,31 @@ exports.restrictTo = (...kinds: string[]) => (req: any, res: any, next: any) => 
         return next(new AppError(403, 'fail', 'You do not have permission to perform this action'));
     }
     next();
+};
+
+/** Restricts a route to Employee actors holding one of the given RBAC roles,
+ * e.g. restrictToEmployeeRole('manager', 'admin'). */
+exports.restrictToEmployeeRole = (...roles: string[]) => (req: any, res: any, next: any) => {
+    if (!req.user || req.user.actorKind !== 'Employee' || !roles.includes(req.user.role)) {
+        return next(new AppError(403, 'fail', 'You do not have permission to perform this action'));
+    }
+    next();
+};
+
+/** Allows either an Employee holding one of `roles`, or any Company (brand
+ * dashboard) actor — used for the audit-log view, which both a manager
+ * checking it from the app and a brand admin checking it from the web
+ * dashboard need to reach. Scoping to "this company's employees only"
+ * happens in the controller, not here. */
+exports.restrictToEmployeeRoleOrCompany = (...roles: string[]) => (req: any, res: any, next: any) => {
+    if (!req.user) {
+        return next(new AppError(403, 'fail', 'You do not have permission to perform this action'));
+    }
+    if (req.user.actorKind === 'Company') {
+        return next();
+    }
+    if (req.user.actorKind === 'Employee' && roles.includes(req.user.role)) {
+        return next();
+    }
+    return next(new AppError(403, 'fail', 'You do not have permission to perform this action'));
 };

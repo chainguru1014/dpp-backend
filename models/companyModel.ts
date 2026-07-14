@@ -24,6 +24,13 @@ const companySchema = new mongoose.Schema({
         unique: true,
         sparse: true
     },
+    // Corporate email domains (e.g. "hm.com") whose staff may sign in via the
+    // employee route (/employee-auth). Lowercased, no leading "@". Empty
+    // means this company has no employee-route access configured yet.
+    allowedEmailDomains: {
+        type: [String],
+        default: []
+    },
     title: {
         type: String
     },

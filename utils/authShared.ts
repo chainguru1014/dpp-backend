@@ -16,19 +16,31 @@ const claimHoldingsForUser = async (user: any) => {
     }
 };
 
+// GDPR data-minimization: we store a 4-digit birth year, never an exact date
+// of birth, and compute the current age on read instead of persisting it —
+// so the value stays accurate indefinitely without ever storing more than a year.
+const ageFromBirthYear = (birthYear: any) => {
+    const year = Number(birthYear);
+    if (!year || Number.isNaN(year)) return undefined;
+    return new Date().getFullYear() - year;
+};
+
 // Shape returned for any authenticated User-kind actor. Kept stable across
 // login/register/google/apple/otp so clients have one response shape to parse.
 const buildUserResponse = (user: any) => ({
     _id: user._id,
     name: user.name,
+    nickname: user.nickname,
     email: user.email,
     avatar: user.avatar,
     role: user.role,
     wallet: user.wallet,
     userType: user.userType,
     gender: user.gender,
-    age: user.age,
+    age: user.userType === 'client' ? ageFromBirthYear(user.birthYear) : user.age,
+    birthYear: user.birthYear,
     country: user.country,
+    pushConsent: user.pushConsent,
     firstName: user.firstName,
     lastName: user.lastName,
     dateOfBirth: user.dateOfBirth,

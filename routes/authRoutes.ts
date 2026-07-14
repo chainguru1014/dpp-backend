@@ -24,5 +24,6 @@ router.post('/apple', AuthController.apple);
 router.post('/otp/request', otpRequestLimiter, AuthController.otpRequest);
 router.post('/otp/verify', otpVerifyLimiter, AuthController.otpVerify);
 router.post('/profile/complete', protect, AuthController.completeProfile);
+router.post('/device-token', protect, AuthController.registerDeviceToken);
 
 module.exports = router;

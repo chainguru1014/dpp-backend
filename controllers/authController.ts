@@ -281,9 +281,10 @@ exports.completeProfile = async (req: any, res: any, next: any) => {
 
         const {
             name,
+            nickname,
             email,
             gender,
-            age,
+            birthYear,
             country,
             firstName,
             lastName,
@@ -298,10 +299,13 @@ exports.completeProfile = async (req: any, res: any, next: any) => {
         const userType = req.body?.userType || user.userType || 'client';
 
         if (userType === 'client') {
-            if (!gender || !age || !country) {
+            // GDPR data minimization: consumers provide exactly nickname/gender/
+            // birthYear/country — no name, email, or phone number is ever required here.
+            const birthYearNum = Number(birthYear);
+            if (!nickname || !gender || !birthYear || !country || Number.isNaN(birthYearNum) || String(birthYear).length !== 4) {
                 return res.status(400).json({
                     status: 'fail',
-                    message: 'Client requires gender, age, and country'
+                    message: 'Client requires nickname, gender, birthYear (4-digit year), and country'
                 });
             }
         } else if (userType === 'agent') {
@@ -327,7 +331,8 @@ exports.completeProfile = async (req: any, res: any, next: any) => {
         user.gender = gender;
 
         if (userType === 'client') {
-            user.age = age;
+            user.nickname = normalizeUsername(nickname);
+            user.birthYear = Number(birthYear);
             user.country = country;
         } else {
             user.firstName = firstName;
@@ -354,6 +359,35 @@ exports.completeProfile = async (req: any, res: any, next: any) => {
             actorKind: 'User',
             message: 'Profile completed successfully'
         });
+    } catch (error) {
+        next(error);
+    }
+};
+
+// POST /auth/device-token — requires a valid JWT. Registers the Expo/FCM push
+// token as the sole channel used to reach a consumer, per the GDPR brief
+// ("Device Token obtained here will be the only key to communicate with the user").
+exports.registerDeviceToken = async (req: any, res: any, next: any) => {
+    try {
+        if (!req.user || req.user.actorKind !== 'User') {
+            return next(new AppError(403, 'fail', 'Only user accounts can register a device token'));
+        }
+
+        const deviceToken = String(req.body?.deviceToken || '').trim();
+        if (!deviceToken) {
+            return res.status(400).json({ status: 'fail', message: 'deviceToken is required' });
+        }
+
+        const user = await User.findById(req.user.id);
+        if (!user) {
+            return next(new AppError(404, 'fail', 'User not found'));
+        }
+
+        user.deviceToken = deviceToken;
+        user.pushConsent = true;
+        await user.save();
+
+        return res.status(200).json({ status: 'success', message: 'Device token registered' });
     } catch (error) {
         next(error);
     }

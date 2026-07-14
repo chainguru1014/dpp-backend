@@ -18,9 +18,17 @@ const userSchema = new mongoose.Schema({
         enum: ['User', 'Company', 'Admin'],
         default: 'User'
     },
+    // No longer required at the schema level: consumer ("client") accounts
+    // identify with `nickname` only and must never be asked for a real name.
+    // Still used to display agent/company-linked accounts that do provide one.
     name: {
         type: String,
-        required: true
+        required: false
+    },
+    // Consumer-facing display name — the only "name" a client-type user ever
+    // provides. Part of the GDPR-safe avatar dataset (nickname/gender/birthYear/country).
+    nickname: {
+        type: String
     },
     email: {
         type: String,
@@ -54,7 +62,16 @@ const userSchema = new mongoose.Schema({
         type: String,
         enum: ['male', 'female', 'other']
     },
+    // Legacy: exact age, previously collected directly. Kept for old records
+    // and for the 'agent' branch; client-type accounts should use birthYear
+    // instead and have their age derived dynamically (see authShared.buildUserResponse).
     age: {
+        type: Number
+    },
+    // 4-digit year only (never a full date of birth) — deliberately coarser
+    // than a DOB so it carries less re-identification risk while still
+    // letting marketing compute an accurate age indefinitely: currentYear - birthYear.
+    birthYear: {
         type: Number
     },
     country: {
@@ -126,6 +143,16 @@ const userSchema = new mongoose.Schema({
     profileCompleted: {
         type: Boolean,
         default: false
+    },
+    // Push-notification consent + the resulting token — per the GDPR brief,
+    // this is meant to be the *only* key used to reach a consumer, so it's
+    // stored independent of any PII field.
+    pushConsent: {
+        type: Boolean,
+        default: false
+    },
+    deviceToken: {
+        type: String
     }
 });
 
