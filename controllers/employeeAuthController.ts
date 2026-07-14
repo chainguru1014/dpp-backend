@@ -1,5 +1,4 @@
 const Employee = require('../models/employeeModel');
-const Company = require('../models/companyModel');
 const AppError = require('../utils/appError');
 const { signJwt } = require('../utils/authShared');
 const { normalizeEmail, emailDomain, hashEmail } = require('../utils/pii');
@@ -16,10 +15,11 @@ const buildEmployeeResponse = (employee: any) => ({
     lastLoginAt: employee.lastLoginAt
 });
 
-// POST /employee-auth/otp/request — corporate-SSO entry point. The raw email
-// exists only for the duration of this request (to look up the allowed-domain
-// Company and to send the OTP mail); nothing below ever writes it to disk.
-// See utils/pii.ts for the one-way hash that stands in for it everywhere else.
+// POST /employee-auth/otp/request — corporate-SSO entry point. Admin-provisioned
+// only: this only succeeds for an emailHash a company admin already created via
+// employeeController.invite. The raw email exists only for the duration of this
+// request (to compute the hash and send the OTP mail); nothing below ever
+// writes it to disk — see utils/pii.ts for the one-way hash used everywhere else.
 exports.otpRequest = async (req: any, res: any, next: any) => {
     try {
         const email = normalizeEmail(req.body?.email);
@@ -28,20 +28,24 @@ exports.otpRequest = async (req: any, res: any, next: any) => {
         }
 
         const domain = emailDomain(email);
-        const company = await Company.findOne({ allowedEmailDomains: domain });
-        if (!company) {
-            // Deliberately generic — doesn't reveal whether the domain almost matched.
-            return res.status(403).json({ status: 'fail', message: 'This email domain is not authorized for staff sign-in' });
+        const emailHash = hashEmail(email);
+
+        // Admin-provisioned only: a company admin must have already created this
+        // employee's record (see employeeController.invite) before they can ever
+        // request a code. We deliberately don't distinguish "wrong domain" from
+        // "not provisioned" in the response — both are the same generic message,
+        // so this endpoint can't be used to enumerate which domains or addresses
+        // are recognized.
+        const employee = await Employee.findOne({ emailHash }).select('+otpCode +otpExpiresAt +otpAttempts +otpResendAt');
+        if (!employee || employee.emailDomain !== domain) {
+            return res.status(403).json({ status: 'fail', message: 'This email is not authorized for staff sign-in. Contact your company admin.' });
         }
 
-        const emailHash = hashEmail(email);
-        let employee = await Employee.findOne({ emailHash }).select('+otpCode +otpExpiresAt +otpAttempts +otpResendAt');
-
-        if (employee && employee.otpResendAt && employee.otpResendAt.getTime() > Date.now()) {
+        if (employee.otpResendAt && employee.otpResendAt.getTime() > Date.now()) {
             return res.status(429).json({ status: 'fail', message: 'Please wait before requesting another code' });
         }
 
-        if (employee && !employee.isActive) {
+        if (!employee.isActive) {
             return res.status(403).json({ status: 'fail', message: 'This staff account has been deactivated' });
         }
 
@@ -54,19 +58,8 @@ exports.otpRequest = async (req: any, res: any, next: any) => {
             otpAttempts: 0
         };
 
-        if (employee) {
-            Object.assign(employee, otpFields);
-            await employee.save();
-        } else {
-            employee = await Employee.create({
-                emailHash,
-                emailDomain: domain,
-                company_id: company._id,
-                role: 'staff',
-                isActive: true,
-                ...otpFields
-            });
-        }
+        Object.assign(employee, otpFields);
+        await employee.save();
 
         try {
             await sendOtpEmail(email, code);

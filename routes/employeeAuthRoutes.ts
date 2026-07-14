@@ -3,7 +3,8 @@ const rateLimit = require('express-rate-limit');
 const router = express.Router();
 const EmployeeAuthController = require('../controllers/employeeAuthController');
 const EmployeeAuditLogController = require('../controllers/employeeAuditLogController');
-const { protect, restrictToEmployeeRoleOrCompany } = require('../middleware/authMiddleware');
+const EmployeeController = require('../controllers/employeeController');
+const { protect, restrictTo, restrictToEmployeeRoleOrCompany } = require('../middleware/authMiddleware');
 
 // Same limits as the consumer OTP routes (authRoutes.ts) — kept separate here
 // so the two routers can be tuned independently.
@@ -22,5 +23,12 @@ const otpVerifyLimiter = rateLimit({
 router.post('/otp/request', otpRequestLimiter, EmployeeAuthController.otpRequest);
 router.post('/otp/verify', otpVerifyLimiter, EmployeeAuthController.otpVerify);
 router.get('/audit-log', protect, restrictToEmployeeRoleOrCompany('manager', 'admin'), EmployeeAuditLogController.list);
+
+// Roster management — Company (brand admin) accounts only. This is the only
+// way an employee record is ever created; see employeeAuthController.otpRequest,
+// which refuses to send a code for anyone not provisioned here first.
+router.post('/employees', protect, restrictTo('Company'), EmployeeController.invite);
+router.get('/employees', protect, restrictTo('Company'), EmployeeController.list);
+router.patch('/employees/:id', protect, restrictTo('Company'), EmployeeController.update);
 
 module.exports = router;
