@@ -2,7 +2,7 @@ const Employee = require('../models/employeeModel');
 const AppError = require('../utils/appError');
 const { signJwt } = require('../utils/authShared');
 const { normalizeEmail, emailDomain, hashEmail } = require('../utils/pii');
-const { generateOtp, sendOtpEmail } = require('../utils/otp');
+const { generateOtp, sendOtpEmail, OTP_EXPIRY_MINUTES } = require('../utils/otp');
 const { appendAuditLog } = require('../utils/employeeAuditLog');
 
 const buildEmployeeResponse = (employee: any) => ({
@@ -53,7 +53,7 @@ exports.otpRequest = async (req: any, res: any, next: any) => {
         const now = Date.now();
         const otpFields = {
             otpCode: code,
-            otpExpiresAt: new Date(now + 10 * 60 * 1000),
+            otpExpiresAt: new Date(now + OTP_EXPIRY_MINUTES * 60 * 1000),
             otpResendAt: new Date(now + 60 * 1000),
             otpAttempts: 0
         };

@@ -5,7 +5,7 @@ const Company = require('../models/companyModel');
 const AppError = require('../utils/appError');
 const { buildUserResponse, buildCompanyResponse, signJwt } = require('../utils/authShared');
 const { findOrLinkOrCreateByEmail, normalizeEmail } = require('../utils/authLink');
-const { generateOtp, sendOtpEmail } = require('../utils/otp');
+const { generateOtp, sendOtpEmail, OTP_EXPIRY_MINUTES } = require('../utils/otp');
 
 const normalizeUsername = (value: any) => (typeof value === 'string' ? value.trim() : '');
 
@@ -158,7 +158,7 @@ const issueOtp = async (owner: any, email: string, res: any, next: any) => {
     const code = generateOtp();
     const now = Date.now();
     owner.otpCode = code;
-    owner.otpExpiresAt = new Date(now + 10 * 60 * 1000);
+    owner.otpExpiresAt = new Date(now + OTP_EXPIRY_MINUTES * 60 * 1000);
     owner.otpResendAt = new Date(now + 60 * 1000);
     owner.otpAttempts = 0;
     await owner.save();
