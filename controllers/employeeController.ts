@@ -6,8 +6,10 @@ const { appendAuditLog } = require('../utils/employeeAuditLog');
 
 const buildEmployeeResponse = (employee: any) => ({
     _id: employee._id,
+    email: employee.email || null,
     emailDomain: employee.emailDomain,
-    company_id: employee.company_id,
+    company_id: employee.company_id?._id || employee.company_id,
+    companyName: employee.company_id?.name,
     employeeCode: employee.employeeCode,
     role: employee.role,
     isActive: employee.isActive,
@@ -15,33 +17,29 @@ const buildEmployeeResponse = (employee: any) => ({
     createdAt: employee.createdAt
 });
 
-/** A Company account manages its own roster only, unless it's the platform
- * "super" account, which may act on behalf of any company via body.company_id
- * / query.companyId. Returns the resolved Company document. */
-const resolveTargetCompany = async (req: any) => {
-    const requester = await Company.findById(req.user.id).select('role');
-    if (!requester) {
-        const err: any = new Error('Company not found');
-        err.statusCode = 404;
+/** Determines which Company an invite should be provisioned under.
+ * - A normal Company account may only provision into its own roster.
+ * - The platform "super" account has no roster of its own, so instead of
+ *   requiring a manually-picked target company, it auto-detects one by
+ *   matching the invited email's domain against every registered company's
+ *   Allowed Staff Email Domains (excluding super/admin accounts, which never
+ *   take on staff of their own). */
+const resolveInviteCompany = async (requester: any, domain: string) => {
+    if (requester.role !== 'super') {
+        return requester;
+    }
+    const target = await Company.findOne({ role: { $ne: 'super' }, allowedEmailDomains: domain });
+    if (!target) {
+        const err: any = new Error(`No registered company has ${domain} listed in its Allowed Staff Email Domains.`);
+        err.statusCode = 400;
         throw err;
     }
-    const requestedCompanyId = req.body?.company_id || req.query?.companyId;
-    if (requester.role === 'super' && requestedCompanyId) {
-        const target = await Company.findById(requestedCompanyId);
-        if (!target) {
-            const err: any = new Error('Target company not found');
-            err.statusCode = 404;
-            throw err;
-        }
-        return target;
-    }
-    return requester;
+    return target;
 };
 
 // POST /employee-auth/employees — admin-provisions a staff account. This is the
 // ONLY way an Employee record gets created: employeeAuthController.otpRequest
-// refuses to send a code for anyone not already provisioned here. The raw
-// email is used only to validate the domain and compute the hash — never stored.
+// refuses to send a code for anyone not already provisioned here.
 exports.invite = async (req: any, res: any, next: any) => {
     try {
         const email = String(req.body?.email || '').trim().toLowerCase();
@@ -53,8 +51,19 @@ exports.invite = async (req: any, res: any, next: any) => {
             return res.status(400).json({ status: 'fail', message: 'role must be staff, manager, or admin' });
         }
 
-        const company = await resolveTargetCompany(req);
+        const requester = await Company.findById(req.user.id).select('role');
+        if (!requester) {
+            return res.status(404).json({ status: 'fail', message: 'Company not found' });
+        }
+
         const domain = emailDomain(email);
+        let company: any;
+        try {
+            company = await resolveInviteCompany(requester, domain);
+        } catch (err: any) {
+            return res.status(err.statusCode || 400).json({ status: 'fail', message: err.message });
+        }
+
         if (!company.allowedEmailDomains || !company.allowedEmailDomains.includes(domain)) {
             return res.status(400).json({
                 status: 'fail',
@@ -71,6 +80,7 @@ exports.invite = async (req: any, res: any, next: any) => {
 
         let isNew = false;
         if (employee) {
+            employee.email = email;
             employee.role = role;
             employee.employeeCode = req.body?.employeeCode || employee.employeeCode;
             employee.isActive = true;
@@ -78,6 +88,7 @@ exports.invite = async (req: any, res: any, next: any) => {
         } else {
             isNew = true;
             employee = await Employee.create({
+                email,
                 emailHash,
                 emailDomain: domain,
                 company_id: company._id,
@@ -98,17 +109,21 @@ exports.invite = async (req: any, res: any, next: any) => {
     }
 };
 
-// GET /employee-auth/employees — roster for the caller's own company (or a
-// specific company via ?companyId= if the caller is the platform "super" account).
+// GET /employee-auth/employees — roster for the caller's own company. The
+// platform "super" account has no roster of its own, so it always sees every
+// company's employees instead (each row's company name comes along via populate).
 exports.list = async (req: any, res: any, next: any) => {
     try {
-        const company = await resolveTargetCompany(req);
-        const employees = await Employee.find({ company_id: company._id }).sort({ createdAt: -1 });
-        return res.status(200).json({ status: 'success', data: employees.map(buildEmployeeResponse) });
-    } catch (error: any) {
-        if (error.statusCode) {
-            return next(new AppError(error.statusCode, 'fail', error.message));
+        const requester = await Company.findById(req.user.id).select('role');
+        if (!requester) {
+            return next(new AppError(404, 'fail', 'Company not found'));
         }
+        const filter = requester.role === 'super' ? {} : { company_id: requester._id };
+        const employees = await Employee.find(filter)
+            .sort({ createdAt: -1 })
+            .populate({ path: 'company_id', select: 'name' });
+        return res.status(200).json({ status: 'success', data: employees.map(buildEmployeeResponse) });
+    } catch (error) {
         next(error);
     }
 };

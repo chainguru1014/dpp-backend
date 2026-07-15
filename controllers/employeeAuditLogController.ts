@@ -44,7 +44,12 @@ exports.list = async (req: any, res: any, next: any) => {
                 .sort({ createdAt: -1 })
                 .skip((page - 1) * limit)
                 .limit(limit)
-                .populate({ path: 'employee_id', select: 'emailDomain company_id role employeeCode', model: Employee }),
+                .populate({
+                    path: 'employee_id',
+                    select: 'email emailDomain company_id role employeeCode',
+                    model: Employee,
+                    populate: { path: 'company_id', select: 'name' }
+                }),
             EmployeeAuditLog.countDocuments(filter)
         ]);
 

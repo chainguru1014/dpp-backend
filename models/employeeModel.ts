@@ -2,7 +2,8 @@ const mongoose = require("mongoose");
 
 // Enterprise-employee identity, deliberately separate from userModel/companyModel
 // so consumer and employee data never share a collection (per the GDPR dual-route
-// requirement). No raw email field exists here on purpose — see utils/pii.ts.
+// requirement). emailHash still backs OTP lookup; the plaintext `email` field
+// below is kept only for admin-facing display (Staff Roster/Audit Log).
 const employeeSchema = new mongoose.Schema({
     // SHA-256 of the normalized corporate email. Deterministic, so the same
     // address always resolves to the same employee record without us ever
@@ -11,6 +12,12 @@ const employeeSchema = new mongoose.Schema({
         type: String,
         required: true,
         unique: true
+    },
+    // Plaintext corporate email, kept for display in the Staff Roster/Audit
+    // Log admin UIs. Optional: employees provisioned before this field existed
+    // only have emailHash/emailDomain and will show blank until re-invited.
+    email: {
+        type: String
     },
     // Domain alone (e.g. "hm.com") isn't sensitive on its own and lets us
     // resolve which Company an employee belongs to and report on it.
