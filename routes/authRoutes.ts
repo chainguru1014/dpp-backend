@@ -22,6 +22,7 @@ const otpVerifyLimiter = rateLimit({
 router.post('/google', AuthController.google);
 router.post('/apple', AuthController.apple);
 router.post('/otp/request', otpRequestLimiter, AuthController.otpRequest);
+router.post('/signup/otp/request', otpRequestLimiter, AuthController.signupOtpRequest);
 router.post('/otp/verify', otpVerifyLimiter, AuthController.otpVerify);
 router.post('/profile/complete', protect, AuthController.completeProfile);
 router.post('/device-token', protect, AuthController.registerDeviceToken);

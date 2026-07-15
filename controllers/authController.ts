@@ -146,9 +146,43 @@ const findOtpOwner = async (email: string) => {
     return { owner: null, actorKind: null };
 };
 
-// POST /auth/otp/request — generates and emails a 6-digit code, with a
-// 60-second per-email resend cooldown (in addition to the route's IP rate
-// limiter, which doesn't catch NAT-sharing users on the same code request).
+/** Shared by otpRequest (sign in) and signupOtpRequest (sign up): applies the
+ * 60-second per-email resend cooldown, generates+stores a fresh code on
+ * `owner`, emails it, and sends the standard 200 response. Both callers have
+ * already decided whether `owner` should exist at this point. */
+const issueOtp = async (owner: any, email: string, res: any, next: any) => {
+    if (owner.otpResendAt && owner.otpResendAt.getTime() > Date.now()) {
+        return res.status(429).json({ status: 'fail', message: 'Please wait before requesting another code' });
+    }
+
+    const code = generateOtp();
+    const now = Date.now();
+    owner.otpCode = code;
+    owner.otpExpiresAt = new Date(now + 10 * 60 * 1000);
+    owner.otpResendAt = new Date(now + 60 * 1000);
+    owner.otpAttempts = 0;
+    await owner.save();
+
+    try {
+        await sendOtpEmail(email, code);
+    } catch (err) {
+        console.error('sendOtpEmail failed:', err);
+        return next(new AppError(502, 'fail', 'Failed to send verification email'));
+    }
+
+    // Dev convenience only — never log OTP codes outside local/dev.
+    if (process.env.NODE_ENV !== 'production') {
+        console.log(`[dev-only] OTP code for ${email}: ${code}`);
+    }
+
+    return res.status(200).json({ message: 'Code sent' });
+};
+
+// POST /auth/otp/request — SIGN IN ONLY. Refuses to send a code (and never
+// creates an account) unless this email already belongs to a User or Company —
+// new accounts must go through POST /auth/signup/otp/request instead. Mirrors
+// the same "admin/self must provision first" principle already used for the
+// employee route, just self-service here rather than admin-gated.
 exports.otpRequest = async (req: any, res: any, next: any) => {
     try {
         const email = normalizeEmail(req.body?.email);
@@ -156,55 +190,46 @@ exports.otpRequest = async (req: any, res: any, next: any) => {
             return res.status(400).json({ status: 'fail', message: 'email is required' });
         }
 
+        const { owner } = await findOtpOwner(email);
+        if (!owner) {
+            return res.status(404).json({ status: 'fail', message: 'This email is not registered. Please sign up first.' });
+        }
+
+        return await issueOtp(owner, email, res, next);
+    } catch (error) {
+        next(error);
+    }
+};
+
+// POST /auth/signup/otp/request — SIGN UP ONLY. Creates a new User shell if
+// (and only if) this email isn't already registered; refuses (rather than
+// silently logging them in) if it already belongs to a User or Company, so
+// signup and sign-in stay distinct actions instead of one implicit fallback.
+exports.signupOtpRequest = async (req: any, res: any, next: any) => {
+    try {
+        const email = normalizeEmail(req.body?.email);
+        if (!email) {
+            return res.status(400).json({ status: 'fail', message: 'email is required' });
+        }
+
         const { owner: existingOwner } = await findOtpOwner(email);
-
-        if (existingOwner && existingOwner.otpResendAt && existingOwner.otpResendAt.getTime() > Date.now()) {
-            return res.status(429).json({ status: 'fail', message: 'Please wait before requesting another code' });
+        if (existingOwner) {
+            return res.status(409).json({ status: 'fail', message: 'This email is already registered. Please sign in instead.' });
         }
 
-        const code = generateOtp();
-        const now = Date.now();
-        const otpFields = {
-            otpCode: code,
-            otpExpiresAt: new Date(now + 10 * 60 * 1000),
-            otpResendAt: new Date(now + 60 * 1000),
-            otpAttempts: 0
-        };
+        // profileCompleted stays false so the client routes to profile
+        // completion after a successful verify, exactly like today.
+        const owner = await User.create({
+            name: email.split('@')[0],
+            email,
+            role: 'User',
+            userType: 'client',
+            isApproved: false,
+            profileCompleted: false,
+            emailVerified: false
+        });
 
-        let owner = existingOwner;
-        if (owner) {
-            Object.assign(owner, otpFields);
-            await owner.save();
-        } else {
-            // No User or Company owns this email yet. Create a minimal User shell
-            // to hold OTP state — otpVerify will find this same document (never a
-            // duplicate), and profileCompleted stays false so the client routes to
-            // profile completion after a successful verify.
-            owner = await User.create({
-                name: email.split('@')[0],
-                email,
-                role: 'User',
-                userType: 'client',
-                isApproved: false,
-                profileCompleted: false,
-                emailVerified: false,
-                ...otpFields
-            });
-        }
-
-        try {
-            await sendOtpEmail(email, code);
-        } catch (err) {
-            console.error('sendOtpEmail failed:', err);
-            return next(new AppError(502, 'fail', 'Failed to send verification email'));
-        }
-
-        // Dev convenience only — never log OTP codes outside local/dev.
-        if (process.env.NODE_ENV !== 'production') {
-            console.log(`[dev-only] OTP code for ${email}: ${code}`);
-        }
-
-        return res.status(200).json({ message: 'Code sent' });
+        return await issueOtp(owner, email, res, next);
     } catch (error) {
         next(error);
     }
