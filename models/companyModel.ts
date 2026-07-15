@@ -49,6 +49,19 @@ const companySchema = new mongoose.Schema({
     location: {
         type: String
     },
+    phoneNumber: {
+        type: String
+    },
+    // Passwordless (OTP/Google/Apple) company self-signup creates a shell
+    // record with this false, same pattern as userModel — the client routes
+    // to a profile-completion form (name/phone/address/description) before
+    // the company shows up fully filled-out in Staff Management for admin
+    // approval. Admin-created companies (POST /company) are considered
+    // complete immediately since an admin filled them out directly.
+    profileCompleted: {
+        type: Boolean,
+        default: true
+    },
     wallet: {
         type: String
     },

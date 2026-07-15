@@ -69,7 +69,9 @@ const buildCompanyResponse = (company: any) => ({
     background: company.background,
     detail: company.detail,
     location: company.location,
-    isVerified: company.isVerified
+    phoneNumber: company.phoneNumber,
+    isVerified: company.isVerified,
+    profileCompleted: company.profileCompleted
 });
 
 /**
