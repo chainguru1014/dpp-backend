@@ -36,10 +36,6 @@ const sendAuthResponse = (res: any, result: any) => {
 exports.google = async (req: any, res: any, next: any) => {
     try {
         const { idToken } = req.body || {};
-        // Renamed to avoid colliding with the Google client-audience list
-        // below (`audience: clientIds`) — this is the "who's signing up"
-        // intent from the client, not an OAuth audience.
-        const signupAudience = req.body?.audience === 'company' ? 'company' : undefined;
         if (!idToken) {
             return res.status(400).json({ status: 'fail', message: 'idToken is required' });
         }
@@ -76,8 +72,7 @@ exports.google = async (req: any, res: any, next: any) => {
                 firstName: payload.given_name,
                 lastName: payload.family_name,
                 avatar: payload.picture
-            },
-            audience: signupAudience
+            }
         });
 
         return sendAuthResponse(res, result);
@@ -92,26 +87,23 @@ exports.google = async (req: any, res: any, next: any) => {
 exports.apple = async (req: any, res: any, next: any) => {
     try {
         const { identityToken, user } = req.body || {};
-        // "Who's signing up" intent from the client — see the same rename
-        // note in exports.google.
-        const signupAudience = req.body?.audience === 'company' ? 'company' : undefined;
         if (!identityToken) {
             return res.status(400).json({ status: 'fail', message: 'identityToken is required' });
         }
 
-        const appleClientIds = String(process.env.APPLE_CLIENT_ID || '')
+        const audience = String(process.env.APPLE_CLIENT_ID || '')
             .split(',')
             .map((s: string) => s.trim())
             .filter(Boolean);
 
-        if (!appleClientIds.length) {
+        if (!audience.length) {
             return next(new AppError(500, 'error', 'Apple sign-in is not configured'));
         }
 
         let applePayload: any;
         try {
             applePayload = await appleSignin.verifyIdToken(identityToken, {
-                audience: appleClientIds,
+                audience,
                 ignoreExpiration: false
             });
         } catch (err) {
@@ -134,8 +126,7 @@ exports.apple = async (req: any, res: any, next: any) => {
                 name: fullName || undefined,
                 firstName,
                 lastName
-            },
-            audience: signupAudience
+            }
         });
 
         return sendAuthResponse(res, result);
@@ -213,15 +204,13 @@ exports.otpRequest = async (req: any, res: any, next: any) => {
     }
 };
 
-// POST /auth/signup/otp/request — SIGN UP ONLY. Creates a new User (or, when
-// `audience: 'company'` is sent — the "Sign up as a Company" entry point — a
-// new Company) shell if this email isn't already registered; refuses (rather
-// than silently logging them in) if it already belongs to a User or Company,
-// so signup and sign-in stay distinct actions instead of one implicit fallback.
+// POST /auth/signup/otp/request — SIGN UP ONLY. Creates a new User shell if
+// (and only if) this email isn't already registered; refuses (rather than
+// silently logging them in) if it already belongs to a User or Company, so
+// signup and sign-in stay distinct actions instead of one implicit fallback.
 exports.signupOtpRequest = async (req: any, res: any, next: any) => {
     try {
         const email = normalizeEmail(req.body?.email);
-        const isCompanySignup = req.body?.audience === 'company';
         if (!email) {
             return res.status(400).json({ status: 'fail', message: 'email is required' });
         }
@@ -233,24 +222,15 @@ exports.signupOtpRequest = async (req: any, res: any, next: any) => {
 
         // profileCompleted stays false so the client routes to profile
         // completion after a successful verify, exactly like today.
-        const owner = isCompanySignup
-            ? await Company.create({
-                name: email.split('@')[0],
-                email,
-                role: 'company',
-                isVerified: false,
-                profileCompleted: false,
-                emailVerified: false
-            })
-            : await User.create({
-                name: email.split('@')[0],
-                email,
-                role: 'User',
-                userType: 'client',
-                isApproved: false,
-                profileCompleted: false,
-                emailVerified: false
-            });
+        const owner = await User.create({
+            name: email.split('@')[0],
+            email,
+            role: 'User',
+            userType: 'client',
+            isApproved: false,
+            profileCompleted: false,
+            emailVerified: false
+        });
 
         return await issueOtp(owner, email, res, next);
     } catch (error) {
@@ -405,54 +385,6 @@ exports.completeProfile = async (req: any, res: any, next: any) => {
             token,
             user: buildUserResponse(user),
             actorKind: 'User',
-            message: 'Profile completed successfully'
-        });
-    } catch (error) {
-        next(error);
-    }
-};
-
-// POST /auth/company-profile/complete — requires a valid JWT (req.user set by
-// the `protect` middleware), actorKind 'Company'. Companies created via
-// passwordless self-signup (see signupOtpRequest / findOrLinkOrCreateByEmail)
-// start with profileCompleted:false; this collects the basics an admin needs
-// to review before approving them in Staff Management. Allowed Staff Email
-// Domains is deliberately NOT collected here — an unverified company could
-// otherwise claim a domain it doesn't own, so an admin sets that during
-// approval instead.
-exports.completeCompanyProfile = async (req: any, res: any, next: any) => {
-    try {
-        if (!req.user || req.user.actorKind !== 'Company') {
-            return next(new AppError(403, 'fail', 'Only company accounts can complete a profile here'));
-        }
-
-        const company = await Company.findById(req.user.id);
-        if (!company) {
-            return next(new AppError(404, 'fail', 'Company not found'));
-        }
-
-        const { name, phoneNumber, location, title } = req.body || {};
-        if (!name || !phoneNumber || !location || !title) {
-            return res.status(400).json({
-                status: 'fail',
-                message: 'Company name, phone number, business address, and description are required'
-            });
-        }
-
-        company.name = normalizeUsername(name) || company.name;
-        company.phoneNumber = phoneNumber;
-        company.location = location;
-        company.title = title;
-        company.profileCompleted = true;
-        await company.save();
-
-        const token = signJwt({ id: company._id, name: company.name, actorKind: 'Company' });
-
-        return res.status(200).json({
-            status: 'success',
-            token,
-            user: buildCompanyResponse(company),
-            actorKind: 'Company',
             message: 'Profile completed successfully'
         });
     } catch (error) {

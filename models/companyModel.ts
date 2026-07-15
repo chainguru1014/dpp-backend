@@ -49,15 +49,13 @@ const companySchema = new mongoose.Schema({
     location: {
         type: String
     },
-    phoneNumber: {
-        type: String
-    },
-    // Passwordless (OTP/Google/Apple) company self-signup creates a shell
-    // record with this false, same pattern as userModel — the client routes
-    // to a profile-completion form (name/phone/address/description) before
-    // the company shows up fully filled-out in Staff Management for admin
-    // approval. Admin-created companies (POST /company) are considered
-    // complete immediately since an admin filled them out directly.
+    // Company signup is admin-only (POST /company); this exists so a Company
+    // actor logging in via passwordless (Google/Apple/OTP) is never wrongly
+    // treated as needing profile completion. Defaults true since an
+    // admin-created company is filled out directly, with nothing left to
+    // complete — see the strict `=== false` check in authController.ts and
+    // pages/index.js (a falsy check would misfire on records that predate
+    // this field, which have it unset rather than true).
     profileCompleted: {
         type: Boolean,
         default: true

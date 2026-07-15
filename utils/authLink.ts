@@ -11,17 +11,16 @@ const normalizeEmail = (value: any) => String(value || '').trim().toLowerCase();
  *      already set to something else) and log them in.
  *   2. Else if a Company already owns that email, link the provider id and
  *      log them in as a Company actor.
- *   3. Else create a brand-new account with profileCompleted:false so the
- *      client routes to profile completion — a User by default, or a
- *      Company when the caller passes `audience: 'company'` (the "Sign up as
- *      a Company" entry point on the login screen).
+ *   3. Else create a brand-new User (never a Company — company creation stays
+ *      admin-only via POST /company) with profileCompleted:false so the
+ *      client routes to profile completion.
  *
  * `provider` is 'google' | 'apple' | 'otp'. `providerId` is the Google `sub`
  * or Apple `sub` — omitted for 'otp'. `profileHints` carries opportunistic
  * data the provider handed us (display name / given+family name / avatar) to
  * pre-fill a brand-new account; never used to overwrite an existing user.
  */
-const findOrLinkOrCreateByEmail = async ({ email, provider, providerId, profileHints, audience }: any) => {
+const findOrLinkOrCreateByEmail = async ({ email, provider, providerId, profileHints }: any) => {
     const normalizedEmail = normalizeEmail(email);
     if (!normalizedEmail) {
         const err: any = new Error('Email is required');
@@ -75,29 +74,8 @@ const findOrLinkOrCreateByEmail = async ({ email, provider, providerId, profileH
         return { actorKind: 'Company', actor: company, token, isNew: false };
     }
 
-    // 3. No existing account for this email at all — self-serve create one.
-    // Company signup only happens here (never in the Company branch above,
-    // which only ever links an existing record) so an attacker can't use
-    // audience:'company' to hijack an email that's already a Company.
-    if (audience === 'company') {
-        const newCompanyData: any = {
-            name: profileHints?.name || normalizedEmail.split('@')[0],
-            email: normalizedEmail,
-            role: 'company',
-            isVerified: false,
-            profileCompleted: false,
-            emailVerified: true
-        };
-        if (provider === 'google') {
-            newCompanyData.googleId = providerId;
-        } else if (provider === 'apple') {
-            newCompanyData.appleId = providerId;
-        }
-        const newCompany = await Company.create(newCompanyData);
-        const token = signJwt({ id: newCompany._id, name: newCompany.name, actorKind: 'Company' });
-        return { actorKind: 'Company', actor: newCompany, token, isNew: true };
-    }
-
+    // 3. No existing account for this email at all — self-serve create a User.
+    // Only reachable for google/apple/otp; never creates a Company.
     const newUserData: any = {
         name: profileHints?.name || normalizedEmail.split('@')[0],
         email: normalizedEmail,
