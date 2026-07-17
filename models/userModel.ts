@@ -153,6 +153,22 @@ const userSchema = new mongoose.Schema({
     },
     deviceToken: {
         type: String
+    },
+    // AI Concierge personalization consent (learning from scans/favorites/
+    // browsing history, shared with participating brands for recommendations).
+    // Shown once after first login and reachable any time after via
+    // "Privacy Preferences" — see authController.aiConciergeConsent.
+    // `aiConciergeConsentAt` is unset (not just falsy) until the user has
+    // actually made a decision either way, which is what the client checks
+    // to decide whether to show the consent screen again; `aiConciergeConsent`
+    // alone can't carry that distinction since "declined" and "never asked"
+    // would otherwise both be `false`.
+    aiConciergeConsent: {
+        type: Boolean,
+        default: false
+    },
+    aiConciergeConsentAt: {
+        type: Date
     }
 });
 

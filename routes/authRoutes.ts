@@ -26,5 +26,6 @@ router.post('/signup/otp/request', otpRequestLimiter, AuthController.signupOtpRe
 router.post('/otp/verify', otpVerifyLimiter, AuthController.otpVerify);
 router.post('/profile/complete', protect, AuthController.completeProfile);
 router.post('/device-token', protect, AuthController.registerDeviceToken);
+router.post('/ai-concierge-consent', protect, AuthController.aiConciergeConsent);
 
 module.exports = router;

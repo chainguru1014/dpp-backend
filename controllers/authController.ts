@@ -420,3 +420,36 @@ exports.registerDeviceToken = async (req: any, res: any, next: any) => {
         next(error);
     }
 };
+
+// POST /auth/ai-concierge-consent — requires a valid JWT. Records the user's
+// choice on AI Concierge personalization (learning from scans/favorites/
+// browsing history, shared with participating brands for recommendations).
+// Shown once after first login (see LoginScreen/RegisterScreen client-side)
+// and reopenable any time via "Privacy Preferences" to change or withdraw —
+// both cases land here, since it's just "set the current choice, record when".
+// `consent` may be true or false: declining is itself a valid, recorded
+// decision (that's what `aiConciergeConsentAt` being set tracks), not an error.
+exports.aiConciergeConsent = async (req: any, res: any, next: any) => {
+    try {
+        if (!req.user || req.user.actorKind !== 'User') {
+            return next(new AppError(403, 'fail', 'Only user accounts can set this preference'));
+        }
+
+        const user = await User.findById(req.user.id);
+        if (!user) {
+            return next(new AppError(404, 'fail', 'User not found'));
+        }
+
+        user.aiConciergeConsent = !!req.body?.consent;
+        user.aiConciergeConsentAt = new Date();
+        await user.save();
+
+        return res.status(200).json({
+            status: 'success',
+            user: buildUserResponse(user),
+            message: 'Preference saved'
+        });
+    } catch (error) {
+        next(error);
+    }
+};

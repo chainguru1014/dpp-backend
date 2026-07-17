@@ -51,7 +51,9 @@ const buildUserResponse = (user: any) => ({
     addressZipCode: user.addressZipCode,
     addressCountry: user.addressCountry,
     phoneNumber: user.phoneNumber,
-    profileCompleted: user.profileCompleted
+    profileCompleted: user.profileCompleted,
+    aiConciergeConsent: user.aiConciergeConsent,
+    aiConciergeConsentAt: user.aiConciergeConsentAt
 });
 
 // Parallel shape for a Company-kind actor (brand/admin accounts), returned when
