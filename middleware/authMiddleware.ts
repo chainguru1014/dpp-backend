@@ -32,7 +32,14 @@ exports.protect = (req: any, res: any, next: any) => {
             role: decoded.role
         };
         next();
-    } catch (err) {
+    } catch (err: any) {
+        // The client only ever sees the generic message below (no reason to tell
+        // a caller *why* their token was rejected), but "expired" (re-login fixes
+        // it), "invalid signature" (JWT_SECRET mismatch between whatever signed
+        // this token and this process — a real server misconfig), and "malformed"
+        // (garbage/missing token) need very different fixes, so log which one
+        // server-side to make that diagnosable from the process logs.
+        console.error('JWT verify failed:', err?.name, '-', err?.message);
         return next(new AppError(401, 'fail', 'Invalid or expired token'));
     }
 };
