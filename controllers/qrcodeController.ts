@@ -35,10 +35,24 @@ const getPublicProductPayload = async (productId: any, qrcodeId: any) => {
         return null;
     }
 
-    const qrcodeData = await QRcode.findOne({ product_id: productId, qrcode_id: numericQrId }).populate('company_id');
+    // Not populated here on purpose: QRcode.company_id declares `ref:
+    // 'Company'`, but company accounts are actually created as Users with
+    // role 'company' — only a handful of legacy seed accounts (admin/Zara/
+    // admin1) exist in the separate Company collection at all. Populating
+    // against the wrong collection silently resolves to null for every other
+    // company, which previously made resolvePmc() below reject with
+    // "company_id required" (caught, logged, and pmc_code silently stayed
+    // null) even though a PMC already existed. Keep the raw id for PMC
+    // resolution regardless, and look up display fields from whichever
+    // collection actually has them.
+    const qrcodeData = await QRcode.findOne({ product_id: productId, qrcode_id: numericQrId });
     if (!qrcodeData) {
         return null;
     }
+    const rawCompanyId = qrcodeData.company_id;
+    const companyDoc = rawCompanyId
+        ? (await Company.findById(rawCompanyId)) || (await User.findById(rawCompanyId))
+        : null;
 
     const product = await Product.findById(productId);
     if (!product) {
@@ -57,7 +71,7 @@ const getPublicProductPayload = async (productId: any, qrcodeId: any) => {
     try {
         const pmc = await resolvePmc({
             product_id: productId,
-            company_id: qrcodeData.company_id?._id || qrcodeData.company_id,
+            company_id: rawCompanyId,
             qrcode_id: numericQrId,
             source_type: 'qr',
             raw_value: scannedQRCode
@@ -69,13 +83,13 @@ const getPublicProductPayload = async (productId: any, qrcodeId: any) => {
 
     return {
         token_id: numericQrId,
-        location: qrcodeData.company_id?.location || '',
+        location: companyDoc?.location || '',
         ...normalizedProduct,
-        ownerInfo: qrcodeData.company_id ? {
-            name: qrcodeData.company_id?.name || '',
-            email: qrcodeData.company_id?.email || '',
-            phoneNumber: qrcodeData.company_id?.phoneNumber || '',
-            address: qrcodeData.company_id?.location || ''
+        ownerInfo: companyDoc ? {
+            name: companyDoc?.name || '',
+            email: companyDoc?.email || '',
+            phoneNumber: companyDoc?.phoneNumber || '',
+            address: companyDoc?.location || ''
         } : null,
         qrcode_img: qrcodeImage,
         serialInfos: serials,
