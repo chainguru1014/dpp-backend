@@ -1,7 +1,10 @@
 const ProductIdentifier = require('../models/productIdentifierModel');
+const PmcIdentifier = require('../models/pmcIdentifierModel');
+const PMC = require('../models/pmcModel');
 const AppError = require('../utils/appError');
 const { SOURCE_TYPES } = require('../utils/pmcConstants');
 const { parseGs1 } = require('../utils/gs1');
+const { resolvePmc } = require('../services/pmcService');
 
 // Admin registers a barcode/GTIN (or an NFC/RFID tag ID) against a product
 // ahead of time, so a later scan of that identifier — by anyone, not just
@@ -32,7 +35,19 @@ exports.register = async (req: any, res: any, next: any) => {
             note: note || ''
         });
 
-        res.status(200).json({ status: 'success', data: doc });
+        // Mint the PMC immediately (rather than waiting for the first scan) so
+        // the admin panel can show a PMC code for an identifier right after
+        // registering it — resolvePmc() is idempotent, so a later real scan
+        // of this same identifier just returns this same PMC.
+        let pmc_code = null;
+        try {
+            const pmc = await resolvePmc({ product_id, company_id, source_type, raw_value: normalizedRawValue, gs1 });
+            pmc_code = pmc?.pmc_code || null;
+        } catch (pmcError) {
+            console.error('PMC resolution failed for identifier registration:', pmcError);
+        }
+
+        res.status(200).json({ status: 'success', data: { ...doc.toObject(), pmc_code } });
     } catch (error: any) {
         if (error?.code === 11000) {
             return next(new AppError(409, 'fail', 'This identifier is already registered to a product'));
@@ -49,7 +64,25 @@ exports.listForProduct = async (req: any, res: any, next: any) => {
         }
 
         const docs = await ProductIdentifier.find({ product_id }).sort({ createdAt: -1 });
-        res.status(200).json({ status: 'success', data: docs });
+
+        // Batch-attach each identifier's PMC code (if one has been resolved for
+        // it yet — either at registration time above, or by a real scan).
+        const pmcIdentifiers = await PmcIdentifier.find({
+            raw_value: { $in: docs.map((d: any) => d.raw_value) }
+        });
+        const pmcIds = [...new Set(pmcIdentifiers.map((pi: any) => String(pi.pmc_id)))];
+        const pmcs = await PMC.find({ _id: { $in: pmcIds } });
+        const pmcCodeById = new Map(pmcs.map((pmc: any) => [String(pmc._id), pmc.pmc_code]));
+        const pmcCodeByIdentifier = new Map(
+            pmcIdentifiers.map((pi: any) => [`${pi.source_type}:${pi.raw_value}`, pmcCodeById.get(String(pi.pmc_id)) || null])
+        );
+
+        const enriched = docs.map((doc: any) => ({
+            ...doc.toObject(),
+            pmc_code: pmcCodeByIdentifier.get(`${doc.source_type}:${doc.raw_value}`) || null
+        }));
+
+        res.status(200).json({ status: 'success', data: enriched });
     } catch (error) {
         next(error);
     }
