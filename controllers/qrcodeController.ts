@@ -93,43 +93,82 @@ exports.updateQRcode = base.updateOne(QRcode);
 exports.deleteQRcode = base.deleteOne(QRcode);
 exports.addQRcode = base.createOne(QRcode);
 
+// Computes the [start, end] qrcode_id range the requested page/from-to
+// selection maps to — same math this endpoint always used, just extracted so
+// it can be shared with the existence check below.
+const resolveQrcodeIdRange = (req: any, totalMintedAmount: number): [number, number] | null => {
+    if (req.body.page == 0) {
+        return [Math.max(1, Number(req.body.from)), Math.min(totalMintedAmount, Number(req.body.to))];
+    }
+    if (req.body.page > 0) {
+        const lastPage = Math.ceil(totalMintedAmount / 100);
+        if (req.body.page > lastPage) return null;
+        const start = (req.body.page - 1) * 100 + 1;
+        const end = req.body.page == lastPage && totalMintedAmount % 100
+            ? (req.body.page - 1) * 100 + (totalMintedAmount % 100)
+            : req.body.page * 100;
+        return [start, end];
+    }
+    return null;
+};
+
+// Returns { qrcode_id, url } per item, one per line/print target within the
+// requested range that actually still has a QRcode document — NOT a blind
+// 1..total_minted_amount loop. A deleted item (see deleteQrcode below) simply
+// stops appearing here instead of reappearing as an unscannable phantom URL.
 exports.getQRcodesWithProductId = async(req: any, res: any, next: any) => {
     try {
-        // const doc = await QRcode.find({ product_id: req.body.product_id }).skip(req.body.offset).limit(req.body.amount);
         const product = await Product.findById(req.body.product_id);
+        const range = product ? resolveQrcodeIdRange(req, product.total_minted_amount) : null;
 
-        let data = [];
-        let count = 100;
-        
-        if (req.body.page == 0) {
-            
-            for (let i = req.body.from; i <= req.body.to; i ++) {
-                if (i > 0 && i <= product.total_minted_amount) {
-                    data.push(buildPublicProductUrl(product._id, i));
-                }
-            }
-        } else if (req.body.page > 0) {
-            if (req.body.page == Math.ceil(product.total_minted_amount / 100) && product.total_minted_amount % 100) {
-                count = product.total_minted_amount % 100;
-            } 
-            else if (req.body.page > Math.ceil(product.total_minted_amount / 100)) {
-                count = 0;
-            }
-            
-            for (let i = 1; i <= count; i ++) {
-                data.push(buildPublicProductUrl(product._id, (req.body.page - 1) * 100 + i));
-            }
+        let data: any[] = [];
+        if (range) {
+            const [start, end] = range;
+            const existing = await QRcode.find({
+                product_id: req.body.product_id,
+                qrcode_id: { $gte: start, $lte: end }
+            }).sort({ qrcode_id: 1 });
+            data = existing.map((doc: any) => ({
+                qrcode_id: doc.qrcode_id,
+                url: buildPublicProductUrl(product._id, doc.qrcode_id)
+            }));
         }
 
         res.status(200).json({
             status: 'success',
             data
         });
-        
+
     } catch (error) {
         next(error);
     }
 
+};
+
+// Deletes one specific minted QR code (and its Serial row) — e.g. the admin
+// voiding a misprinted/damaged code. Deliberately does NOT touch
+// total_minted_amount: the surrounding ids stay put (no renumbering), the
+// deleted id simply stops appearing in getQRcodesWithProductId above and
+// 404s on scan (getPublicProductPayload already checks QRcode existence).
+// PMC/PmcIdentifier rows are left alone, same as product-identifier delete.
+exports.deleteQrcode = async (req: any, res: any, next: any) => {
+    try {
+        const { productId, qrcodeId } = req.params;
+        const numericQrId = Number(qrcodeId);
+        if (!mongoose.Types.ObjectId.isValid(String(productId)) || !Number.isFinite(numericQrId)) {
+            return res.status(400).json({ status: 'fail', message: 'Invalid productId/qrcodeId' });
+        }
+
+        const doc = await QRcode.findOneAndDelete({ product_id: productId, qrcode_id: numericQrId });
+        if (!doc) {
+            return res.status(404).json({ status: 'fail', message: 'QR code not found' });
+        }
+        await Serials.deleteMany({ product_id: productId, qrcode_id: numericQrId });
+
+        res.status(200).json({ status: 'success', data: null });
+    } catch (error) {
+        next(error);
+    }
 };
 
 exports.decrypt = async (req: any, res: any, next: any) => { 
@@ -659,64 +698,50 @@ exports.getProductInfoWithSerial = async(req:any, res:any, next:any) => {
     }
 }
 
+// Returns { qrcode_id, identifiers } per item — same existing-QRcode-only set
+// as getQRcodesWithProductId above (not a blind 1..total_minted_amount loop),
+// so the two responses always describe exactly the same surviving items.
 exports.getSerials = async(req:any, res:any, next:any) => {
     try {
-        try {
-            // const doc = await QRcode.find({ product_id: req.body.product_id }).skip(req.body.offset).limit(req.body.amount);
-            const product = await Product.findById(req.body.product_id)
-            const serials = await Serials.find({product_id:req.body.product_id})
+        const product = await Product.findById(req.body.product_id);
+        const range = product ? resolveQrcodeIdRange(req, product.total_minted_amount) : null;
+
+        let data: any[] = [];
+        if (range) {
+            const [start, end] = range;
+            const existing = await QRcode.find({
+                product_id: req.body.product_id,
+                qrcode_id: { $gte: start, $lte: end }
+            }).sort({ qrcode_id: 1 });
+            const qrcodeIds = existing.map((doc: any) => doc.qrcode_id);
+
+            const serials = await Serials.find({ product_id: req.body.product_id, qrcode_id: { $in: qrcodeIds } });
             // One PMC per (product_id, qrcode_id) — fetched once for the whole
             // product and matched by qrcode_id below so the admin UI/print
             // export can display it alongside each item's other identifiers
             // without any change on their end (they just render whatever
             // {type, serial} pairs this endpoint returns per item).
-            const pmcs = await PMC.find({ product_id: req.body.product_id });
+            const pmcs = await PMC.find({ product_id: req.body.product_id, qrcode_id: { $in: qrcodeIds } });
             const pmcByQrcodeId = new Map(pmcs.map((pmc: any) => [pmc.qrcode_id, pmc.pmc_code]));
 
-            const withPmc = (qrcodeId: number, list: any[]) => {
+            data = qrcodeIds.map((qrcodeId: number) => {
+                const serial = serials.filter((item: any) => item.qrcode_id === qrcodeId);
                 const pmcCode = pmcByQrcodeId.get(qrcodeId);
-                return pmcCode ? [...list, { type: 'PMC Code', serial: pmcCode }] : list;
-            };
-
-            let data = [];
-            let count = 100;
-
-            if (req.body.page == 0) {
-
-                for (let i = req.body.from; i <= req.body.to; i ++) {
-                    if (i > 0 && i <= product.total_minted_amount) {
-                        let serial = serials.filter((item:any)=>item.qrcode_id === i)
-                        data.push(withPmc(i, serial));
-                    }
-                }
-            } else if (req.body.page > 0) {
-                if (req.body.page == Math.ceil(product.total_minted_amount / 100) && product.total_minted_amount % 100) {
-                    count = product.total_minted_amount % 100;
-                }
-                else if (req.body.page > Math.ceil(product.total_minted_amount / 100)) {
-                    count = 0;
-                }
-
-                for (let i = 1; i <= count; i ++) {
-                    const qrcodeId = (req.body.page - 1) * 100 + i;
-                    let serial = serials.filter((item:any)=>item.qrcode_id === qrcodeId)
-                    data.push(withPmc(qrcodeId, serial));
-                }
-            }
-
-            res.status(200).json({
-                status: 'success',
-                data
+                return {
+                    qrcode_id: qrcodeId,
+                    identifiers: pmcCode ? [...serial, { type: 'PMC Code', serial: pmcCode }] : serial
+                };
             });
-
-        } catch (error) {
-            next(error);
         }
-    }
-    catch(err) {
 
-    }
+        res.status(200).json({
+            status: 'success',
+            data
+        });
 
+    } catch (error) {
+        next(error);
+    }
 }
 
 // Generate Security QR Codes (independent from regular QR codes)
@@ -796,15 +821,38 @@ exports.getSecurityQRCodes = async (req: any, res: any, next: any) => {
             .skip((page - 1) * 100)
             .limit(100);
 
-        const encryptedKeys = securityQRCodes.map((sqrc: any) => sqrc.encrypted_key);
+        const data = securityQRCodes.map((sqrc: any) => ({
+            security_qrcode_id: sqrc.security_qrcode_id,
+            encrypted_key: sqrc.encrypted_key
+        }));
         const totalCount = await SecurityQRCode.countDocuments({ product_id });
 
         res.status(200).json({
             status: 'success',
-            data: encryptedKeys,
+            data,
             total: totalCount,
             page: page
         });
+    } catch (error) {
+        next(error);
+    }
+};
+
+// Deletes one specific Security QR code — mirrors deleteQrcode above.
+exports.deleteSecurityQrcode = async (req: any, res: any, next: any) => {
+    try {
+        const { productId, securityQrcodeId } = req.params;
+        const numericId = Number(securityQrcodeId);
+        if (!mongoose.Types.ObjectId.isValid(String(productId)) || !Number.isFinite(numericId)) {
+            return res.status(400).json({ status: 'fail', message: 'Invalid productId/securityQrcodeId' });
+        }
+
+        const doc = await SecurityQRCode.findOneAndDelete({ product_id: productId, security_qrcode_id: numericId });
+        if (!doc) {
+            return res.status(404).json({ status: 'fail', message: 'Security QR code not found' });
+        }
+
+        res.status(200).json({ status: 'success', data: null });
     } catch (error) {
         next(error);
     }

@@ -15,6 +15,7 @@ router.get('/scan/history', QRcodeController.getScanHistory); // Admin scan-hist
 router.get('/analytics', QRcodeController.getAnalytics); // Dashboard analytics
 router.post('/serialdata/productinfo',QRcodeController.getProductInfoWithSerial);
 router.post('/serials',QRcodeController.getSerials)
+router.delete('/product/:productId/:qrcodeId', QRcodeController.deleteQrcode); // Void one minted QR code
 router.get('/product/:key', QRcodeController.getProductByKey); // Public web endpoint
 router.get('/public/:productId/:qrcodeId', QRcodeController.getPublicProductByIds); // Public app/web endpoint
 router.get('/:id', QRcodeController.getQRcode);
@@ -26,6 +27,7 @@ router.get('/:id/productinfo', QRcodeController.getProductInfoWithQRCodeID);
 // Security QR Code routes
 router.post('/security/generate', QRcodeController.generateSecurityQRCodes);
 router.post('/security/product', QRcodeController.getSecurityQRCodes);
+router.delete('/security/:productId/:securityQrcodeId', QRcodeController.deleteSecurityQrcode);
 
 
 
