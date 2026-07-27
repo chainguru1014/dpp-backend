@@ -28,12 +28,19 @@ const pmcSchema = new mongoose.Schema({
     qrcode_id: {
         type: Number,
         default: null
+    },
+    // Set instead of qrcode_id when this item is a Security QR code (its own
+    // id space — see securityQRCodeModel) rather than a regular minted QR.
+    security_qrcode_id: {
+        type: Number,
+        default: null
     }
 }, {
     timestamps: true
 });
 
 pmcSchema.index({ product_id: 1, qrcode_id: 1 });
+pmcSchema.index({ product_id: 1, security_qrcode_id: 1 });
 
 const PMC = mongoose.model("PMC", pmcSchema);
 module.exports = PMC;

@@ -803,6 +803,20 @@ exports.generateSecurityQRCodes = async (req: any, res: any, next: any) => {
                 encrypted_key: encryptData
             });
 
+            // Every Security QR code gets a PMC too, same as a regular minted
+            // QR code — see getSerials above for the qrcode_id equivalent.
+            try {
+                await resolvePmc({
+                    product_id: product._id,
+                    company_id,
+                    security_qrcode_id,
+                    source_type: 'qr',
+                    raw_value: encryptData
+                });
+            } catch (error) {
+                console.error('PMC resolution failed for security QR code:', error);
+            }
+
             encryptedKeys.push(encryptData);
         }
 
@@ -835,9 +849,35 @@ exports.getSecurityQRCodes = async (req: any, res: any, next: any) => {
             .skip((page - 1) * 100)
             .limit(100);
 
-        const data = securityQRCodes.map((sqrc: any) => ({
-            security_qrcode_id: sqrc.security_qrcode_id,
-            encrypted_key: sqrc.encrypted_key
+        // One PMC per Security QR code — items minted before this existed
+        // won't have one yet, so lazily create it here the same way
+        // getPublicProductPayload does for regular QR scans (idempotent
+        // find-or-create; later fetches just return the same one).
+        const securityQrcodeIds = securityQRCodes.map((sqrc: any) => sqrc.security_qrcode_id);
+        const pmcs = await PMC.find({ product_id, security_qrcode_id: { $in: securityQrcodeIds } });
+        const pmcBySecurityQrcodeId = new Map(pmcs.map((pmc: any) => [pmc.security_qrcode_id, pmc.pmc_code]));
+
+        const data = await Promise.all(securityQRCodes.map(async (sqrc: any) => {
+            let pmc_code = pmcBySecurityQrcodeId.get(sqrc.security_qrcode_id) || null;
+            if (!pmc_code) {
+                try {
+                    const pmc = await resolvePmc({
+                        product_id: sqrc.product_id,
+                        company_id: sqrc.company_id,
+                        security_qrcode_id: sqrc.security_qrcode_id,
+                        source_type: 'qr',
+                        raw_value: sqrc.encrypted_key
+                    });
+                    pmc_code = pmc?.pmc_code || null;
+                } catch (error) {
+                    console.error('PMC resolution failed for security QR code:', error);
+                }
+            }
+            return {
+                security_qrcode_id: sqrc.security_qrcode_id,
+                encrypted_key: sqrc.encrypted_key,
+                pmc_code
+            };
         }));
         const totalCount = await SecurityQRCode.countDocuments({ product_id });
 

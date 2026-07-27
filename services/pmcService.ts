@@ -39,12 +39,13 @@ const generatePmcCode = () => {
  * the GS1 element parser. Until then, each source_type+raw_value pair is its
  * own identity unless explicitly linked via qrcode_id.
  */
-const resolvePmc = async ({ product_id, company_id, source_type, raw_value, qrcode_id, gs1 }: {
+const resolvePmc = async ({ product_id, company_id, source_type, raw_value, qrcode_id, security_qrcode_id, gs1 }: {
     product_id: any;
     company_id: any;
     source_type: string;
     raw_value: string;
     qrcode_id?: number | null;
+    security_qrcode_id?: number | null;
     gs1?: { gtin?: string; batchLot?: string; serial?: string; expiry?: string };
 }) => {
     if (!product_id || !company_id) {
@@ -70,10 +71,13 @@ const resolvePmc = async ({ product_id, company_id, source_type, raw_value, qrco
     const effectiveGs1 = gs1 || parseGs1(normalizedRawValue) || undefined;
 
     const normalizedQrcodeId = qrcode_id != null && Number.isFinite(Number(qrcode_id)) ? Number(qrcode_id) : null;
+    const normalizedSecurityQrcodeId = security_qrcode_id != null && Number.isFinite(Number(security_qrcode_id)) ? Number(security_qrcode_id) : null;
 
     let pmc = normalizedQrcodeId != null
         ? await PMC.findOne({ product_id, qrcode_id: normalizedQrcodeId })
-        : null;
+        : normalizedSecurityQrcodeId != null
+            ? await PMC.findOne({ product_id, security_qrcode_id: normalizedSecurityQrcodeId })
+            : null;
 
     if (!pmc) {
         // Extremely unlikely to collide (36^11 space), but retry once on the
@@ -84,6 +88,7 @@ const resolvePmc = async ({ product_id, company_id, source_type, raw_value, qrco
                     product_id,
                     company_id,
                     qrcode_id: normalizedQrcodeId,
+                    security_qrcode_id: normalizedSecurityQrcodeId,
                     pmc_code: generatePmcCode()
                 });
             } catch (error: any) {
