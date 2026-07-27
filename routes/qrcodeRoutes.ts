@@ -27,6 +27,7 @@ router.get('/:id/productinfo', QRcodeController.getProductInfoWithQRCodeID);
 // Security QR Code routes
 router.post('/security/generate', QRcodeController.generateSecurityQRCodes);
 router.post('/security/product', QRcodeController.getSecurityQRCodes);
+router.post('/security/:productId/print', QRcodeController.printSecurityQRCodes);
 router.delete('/security/:productId/:securityQrcodeId', QRcodeController.deleteSecurityQrcode);
 
 

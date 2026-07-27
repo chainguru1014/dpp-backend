@@ -133,6 +133,22 @@ const productSchema = new mongoose.Schema({
         type: Number,
         default: 0
     },
+    // Mirrors printed_amount above, but for Security QR codes — a separate
+    // counter because Security QR codes are their own id space
+    // (security_qrcode_id, not qrcode_id — see securityQRCodeModel).
+    security_printed_amount: {
+        type: Number,
+        default: 0
+    },
+    // Same idea again, one counter per externally-facing identifier type
+    // (barcode/nfc/rfid/gs1dl — see productIdentifierModel) since each type
+    // is its own printable list on the Generate & Print page.
+    identifier_printed_amounts: {
+        barcode: { type: Number, default: 0 },
+        nfc: { type: Number, default: 0 },
+        rfid: { type: Number, default: 0 },
+        gs1dl: { type: Number, default: 0 }
+    },
     is_deleted: {
         type: Boolean,
         default: false

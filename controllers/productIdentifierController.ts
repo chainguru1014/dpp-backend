@@ -1,6 +1,7 @@
 const ProductIdentifier = require('../models/productIdentifierModel');
 const PmcIdentifier = require('../models/pmcIdentifierModel');
 const PMC = require('../models/pmcModel');
+const Product = require('../models/productModel');
 const AppError = require('../utils/appError');
 const { SOURCE_TYPES } = require('../utils/pmcConstants');
 const { parseGs1 } = require('../utils/gs1');
@@ -83,6 +84,38 @@ exports.listForProduct = async (req: any, res: any, next: any) => {
         }));
 
         res.status(200).json({ status: 'success', data: enriched });
+    } catch (error) {
+        next(error);
+    }
+};
+
+// Marks the next `count` (unprinted, in registration order) identifiers of
+// one type as printed — mirrors productController.printQRCodes/
+// qrcodeController.printSecurityQRCodes, but against
+// Product.identifier_printed_amounts[source_type] since each of the four
+// identifier types (barcode/nfc/rfid/gs1dl) is its own printable list.
+exports.printIdentifiers = async (req: any, res: any, next: any) => {
+    try {
+        const { source_type, count } = req.body || {};
+        if (!SOURCE_TYPES.includes(source_type)) {
+            return next(new AppError(400, 'fail', `source_type must be one of: ${SOURCE_TYPES.join(', ')}`));
+        }
+        const product = await Product.findById(req.params.productId);
+        if (!product) {
+            return res.status(404).json({ status: 'fail', message: 'Product not found' });
+        }
+        const total = await ProductIdentifier.countDocuments({ product_id: product._id, source_type });
+        const printed = (product.identifier_printed_amounts && product.identifier_printed_amounts[source_type]) || 0;
+        const requested = Number(count) || 0;
+        const newPrinted = total >= printed + requested ? printed + requested : total;
+
+        await Product.updateOne(
+            { _id: product._id },
+            { $set: { [`identifier_printed_amounts.${source_type}`]: newPrinted } }
+        );
+        const updated = await Product.findById(product._id).lean();
+
+        res.status(200).json({ status: 'success', data: updated });
     } catch (error) {
         next(error);
     }

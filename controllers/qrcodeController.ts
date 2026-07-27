@@ -892,6 +892,30 @@ exports.getSecurityQRCodes = async (req: any, res: any, next: any) => {
     }
 };
 
+// Marks the next `count` (unprinted, in security_qrcode_id order) Security
+// QR codes as printed — mirrors productController.printQRCodes, but against
+// SecurityQRCode's own counter (security_printed_amount) since Security QR
+// codes are a separate id space from regular QR codes.
+exports.printSecurityQRCodes = async (req: any, res: any, next: any) => {
+    try {
+        const product = await Product.findById(req.params.productId);
+        if (!product) {
+            return res.status(404).json({ status: 'fail', message: 'Product not found' });
+        }
+        const total = await SecurityQRCode.countDocuments({ product_id: product._id });
+        const count = Number(req.body.count) || 0;
+        const printed = product.security_printed_amount || 0;
+        const newPrinted = total >= printed + count ? printed + count : total;
+
+        await Product.updateOne({ _id: product._id }, { $set: { security_printed_amount: newPrinted } });
+        const updated = await Product.findById(product._id).lean();
+
+        res.status(200).json({ status: 'success', data: updated });
+    } catch (error) {
+        next(error);
+    }
+};
+
 // Deletes one specific Security QR code — mirrors deleteQrcode above.
 exports.deleteSecurityQrcode = async (req: any, res: any, next: any) => {
     try {
