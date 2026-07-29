@@ -454,6 +454,7 @@ exports.getScanHistory = async (req: any, res: any, next: any) => {
                         $project: {
                             _id: 1, scanned_at: 1, source: 1, ip: 1, location: 1,
                             security_verified: 1, security_qrcode_id: 1, qrcode_id: 1, pmc_code: 1,
+                            identifier_type: 1,
                             like: 1, dislike: 1, buy: 1,
                             user: {
                                 _id: '$user._id', name: '$user.name', email: '$user.email',
