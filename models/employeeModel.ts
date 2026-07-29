@@ -41,6 +41,16 @@ const employeeSchema = new mongoose.Schema({
         enum: ['staff', 'manager', 'admin'],
         default: 'staff'
     },
+    // Which surface this employee is provisioned for: a Working Employee
+    // signs in on the mobile app; a Supervisor signs in on the frontend
+    // dashboard and gets Products + Dashboard access there (see
+    // pages/index.js's isEmployeeActor gating). Independent of `role` above,
+    // which only ever gated the Staff Console's audit-log tab.
+    employeeType: {
+        type: String,
+        enum: ['working_employee', 'supervisor'],
+        default: 'working_employee'
+    },
     isActive: {
         type: Boolean,
         default: true

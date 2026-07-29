@@ -8,9 +8,11 @@ const { appendAuditLog } = require('../utils/employeeAuditLog');
 const buildEmployeeResponse = (employee: any) => ({
     _id: employee._id,
     emailDomain: employee.emailDomain,
-    company_id: employee.company_id,
+    company_id: employee.company_id?._id || employee.company_id,
+    companyName: employee.company_id?.name,
     employeeCode: employee.employeeCode,
     role: employee.role,
+    employeeType: employee.employeeType,
     isActive: employee.isActive,
     lastLoginAt: employee.lastLoginAt
 });
@@ -90,7 +92,9 @@ exports.otpVerify = async (req: any, res: any, next: any) => {
         }
 
         const emailHash = hashEmail(email);
-        const employee = await Employee.findOne({ emailHash }).select('+otpCode +otpExpiresAt +otpAttempts +otpResendAt');
+        const employee = await Employee.findOne({ emailHash })
+            .select('+otpCode +otpExpiresAt +otpAttempts +otpResendAt')
+            .populate({ path: 'company_id', select: 'name' });
 
         if (!employee || !employee.otpCode || !employee.otpExpiresAt) {
             return res.status(400).json({ status: 'fail', message: 'No pending code for this email. Request a new one.' });

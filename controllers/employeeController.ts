@@ -12,6 +12,7 @@ const buildEmployeeResponse = (employee: any) => ({
     companyName: employee.company_id?.name,
     employeeCode: employee.employeeCode,
     role: employee.role,
+    employeeType: employee.employeeType,
     isActive: employee.isActive,
     lastLoginAt: employee.lastLoginAt,
     createdAt: employee.createdAt
@@ -44,11 +45,15 @@ exports.invite = async (req: any, res: any, next: any) => {
     try {
         const email = String(req.body?.email || '').trim().toLowerCase();
         const role = req.body?.role || 'staff';
+        const employeeType = req.body?.employeeType || 'working_employee';
         if (!email || !email.includes('@')) {
             return res.status(400).json({ status: 'fail', message: 'A valid email is required' });
         }
         if (!['staff', 'manager', 'admin'].includes(role)) {
             return res.status(400).json({ status: 'fail', message: 'role must be staff, manager, or admin' });
+        }
+        if (!['working_employee', 'supervisor'].includes(employeeType)) {
+            return res.status(400).json({ status: 'fail', message: 'employeeType must be working_employee or supervisor' });
         }
 
         const requester = await Company.findById(req.user.id).select('role');
@@ -82,6 +87,7 @@ exports.invite = async (req: any, res: any, next: any) => {
         if (employee) {
             employee.email = email;
             employee.role = role;
+            employee.employeeType = employeeType;
             employee.employeeCode = req.body?.employeeCode || employee.employeeCode;
             employee.isActive = true;
             await employee.save();
@@ -94,11 +100,12 @@ exports.invite = async (req: any, res: any, next: any) => {
                 company_id: company._id,
                 employeeCode: req.body?.employeeCode,
                 role,
+                employeeType,
                 isActive: true
             });
         }
 
-        await appendAuditLog(employee._id, isNew ? 'provisioned' : 'updated', { role, by: String(req.user.id) }, req.ip);
+        await appendAuditLog(employee._id, isNew ? 'provisioned' : 'updated', { role, employeeType, by: String(req.user.id) }, req.ip);
 
         return res.status(200).json({ status: 'success', data: buildEmployeeResponse(employee) });
     } catch (error: any) {
@@ -145,18 +152,24 @@ exports.update = async (req: any, res: any, next: any) => {
             return next(new AppError(403, 'fail', 'You do not have permission to manage this employee'));
         }
 
-        const { role, isActive, employeeCode } = req.body || {};
+        const { role, employeeType, isActive, employeeCode } = req.body || {};
         if (role !== undefined) {
             if (!['staff', 'manager', 'admin'].includes(role)) {
                 return res.status(400).json({ status: 'fail', message: 'role must be staff, manager, or admin' });
             }
             employee.role = role;
         }
+        if (employeeType !== undefined) {
+            if (!['working_employee', 'supervisor'].includes(employeeType)) {
+                return res.status(400).json({ status: 'fail', message: 'employeeType must be working_employee or supervisor' });
+            }
+            employee.employeeType = employeeType;
+        }
         if (isActive !== undefined) employee.isActive = !!isActive;
         if (employeeCode !== undefined) employee.employeeCode = employeeCode;
         await employee.save();
 
-        await appendAuditLog(employee._id, 'updated', { role: employee.role, isActive: employee.isActive, by: String(req.user.id) }, req.ip);
+        await appendAuditLog(employee._id, 'updated', { role: employee.role, employeeType: employee.employeeType, isActive: employee.isActive, by: String(req.user.id) }, req.ip);
 
         return res.status(200).json({ status: 'success', data: buildEmployeeResponse(employee) });
     } catch (error) {
