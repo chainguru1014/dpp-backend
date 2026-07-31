@@ -14,6 +14,7 @@ const buildEmployeeResponse = (employee: any) => ({
     role: employee.role,
     employeeType: employee.employeeType,
     isActive: employee.isActive,
+    terminalId: employee.terminalId,
     lastLoginAt: employee.lastLoginAt
 });
 

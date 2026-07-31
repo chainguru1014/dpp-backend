@@ -55,6 +55,13 @@ const employeeSchema = new mongoose.Schema({
         type: Boolean,
         default: true
     },
+    // Auto-assigned once at creation (letter+2-digit, e.g. "A07") via
+    // counterModel's per-company sequence — never user-editable, not tied to
+    // a physical device. Shown in the mobile app's corporate scan/review UI
+    // as "Terminal {terminalId}".
+    terminalId: {
+        type: String
+    },
     // OTP fields, same pattern as userModel/companyModel — select:false so
     // otpCode never comes back on a normal find().
     otpCode: {

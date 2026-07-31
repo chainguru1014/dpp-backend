@@ -22,6 +22,7 @@ const notificationRoutes = require('./routes/notificationRoutes');
 const aiRoutes = require('./routes/aiRoutes');
 const pmcRoutes = require('./routes/pmcRoutes');
 const productIdentifierRoutes = require('./routes/productIdentifierRoutes');
+const captureRoutes = require('./routes/captureRoutes');
 const globalErrHandler = require('./controllers/errorController');
 const AppError = require('./utils/appError');
 
@@ -86,6 +87,7 @@ app.use('/transfer', transferRoutes);
 app.use('/notification', notificationRoutes);
 app.use('/pmc', pmcRoutes);
 app.use('/product-identifier', productIdentifierRoutes);
+app.use('/captures', captureRoutes);
 app.use('/', aiRoutes);
 
 // Serve product web page for URL-format QR codes:

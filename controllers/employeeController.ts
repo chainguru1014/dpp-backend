@@ -3,6 +3,8 @@ const Company = require('../models/companyModel');
 const AppError = require('../utils/appError');
 const { emailDomain, hashEmail } = require('../utils/pii');
 const { appendAuditLog } = require('../utils/employeeAuditLog');
+const { getNextSequence } = require('../models/counterModel');
+const { formatTerminalId } = require('../utils/idFormat');
 
 const buildEmployeeResponse = (employee: any) => ({
     _id: employee._id,
@@ -14,6 +16,7 @@ const buildEmployeeResponse = (employee: any) => ({
     role: employee.role,
     employeeType: employee.employeeType,
     isActive: employee.isActive,
+    terminalId: employee.terminalId,
     lastLoginAt: employee.lastLoginAt,
     createdAt: employee.createdAt
 });
@@ -93,6 +96,7 @@ exports.invite = async (req: any, res: any, next: any) => {
             await employee.save();
         } else {
             isNew = true;
+            const terminalSeq = await getNextSequence(`terminal:${company._id}`);
             employee = await Employee.create({
                 email,
                 emailHash,
@@ -101,7 +105,8 @@ exports.invite = async (req: any, res: any, next: any) => {
                 employeeCode: req.body?.employeeCode,
                 role,
                 employeeType,
-                isActive: true
+                isActive: true,
+                terminalId: formatTerminalId(terminalSeq)
             });
         }
 

@@ -105,6 +105,17 @@ const companySchema = new mongoose.Schema({
     emailVerified: {
         type: Boolean,
         default: false
+    },
+    // Configurable "Worker Operations" step labels shown as a numbered grid on
+    // the mobile app's employee home screen. Array position is the display
+    // order (1-10) — no separate order field. Non-blank validation happens in
+    // companyController, not here, so this never blocks Company.create().
+    processSteps: {
+        type: [{
+            entity: { type: String, trim: true, default: '' },
+            type: { type: String, trim: true, default: '' }
+        }],
+        default: [{ entity: '', type: '' }]
     }
 });
 

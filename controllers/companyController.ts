@@ -1,9 +1,13 @@
 const Company = require('../models/companyModel');
 const Product = require('../models/productModel')
+const Employee = require('../models/employeeModel');
 const base = require('./baseController');
 const APIFeatures = require('../utils/apiFeatures');
 const AppError = require('../utils/appError');
 const { encrypt } = require('../utils/helper');
+const { emailDomain, hashEmail } = require('../utils/pii');
+const { getNextSequence } = require('../models/counterModel');
+const { formatTerminalId } = require('../utils/idFormat');
 const qrcode = require('qrcode');
 const QRcode = require('../models/qrcodeModel');
 const mongoose = require("mongoose");
@@ -26,6 +30,41 @@ exports.addCompany = async(req: any, res: any, next: any) => {
         // and clients must not be able to self-assign an elevated role.
         const doc = await Company.create({ ...req.body, role: 'company' });
 
+        // Best-effort: provision a default Supervisor employee from the
+        // company's own contact email, so a freshly-registered company has
+        // someone who can sign in to the dashboard immediately rather than
+        // needing a pre-existing employee to invite them. Never blocks
+        // company creation itself — email is optional on Company.
+        const rawEmail = String(req.body?.email || '').trim();
+        if (rawEmail && rawEmail.includes('@')) {
+            try {
+                const domain = emailDomain(rawEmail);
+                const emailHash = hashEmail(rawEmail);
+
+                if (!doc.allowedEmailDomains.includes(domain)) {
+                    doc.allowedEmailDomains.push(domain);
+                    await doc.save();
+                }
+
+                const existingEmployee = await Employee.findOne({ emailHash });
+                if (!existingEmployee) {
+                    const terminalSeq = await getNextSequence(`terminal:${doc._id}`);
+                    await Employee.create({
+                        email: rawEmail.toLowerCase(),
+                        emailHash,
+                        emailDomain: domain,
+                        company_id: doc._id,
+                        role: 'admin',
+                        employeeType: 'supervisor',
+                        isActive: true,
+                        terminalId: formatTerminalId(terminalSeq)
+                    });
+                }
+            } catch (provisionErr) {
+                console.error('Default supervisor provisioning failed:', provisionErr);
+            }
+        }
+
         res.status(200).json({
             status: 'success',
             data: {
@@ -33,6 +72,85 @@ exports.addCompany = async(req: any, res: any, next: any) => {
             }
         });
 
+    } catch (error) {
+        next(error);
+    }
+};
+
+// Resolves which Company doc a process-steps request is scoped to, and
+// whether the requester may WRITE to it. Mirrors
+// employeeAuditLogController.resolveCompanyScope's actorKind branching, but
+// returns the full Company doc since callers read/write processSteps
+// directly on it.
+const resolveProcessStepsActor = async (req: any) => {
+    if (req.user.actorKind === 'Company') {
+        const company = await Company.findById(req.user.id);
+        if (!company || company.role === 'super') {
+            return { company: null, canWrite: false };
+        }
+        return { company, canWrite: true };
+    }
+    // Employee: any employeeType may READ (the mobile Worker Operations grid
+    // needs it for working_employee too); only a Supervisor may WRITE.
+    const employee = await Employee.findById(req.user.id).select('company_id employeeType');
+    if (!employee) {
+        return { company: null, canWrite: false };
+    }
+    const company = await Company.findById(employee.company_id);
+    return { company, canWrite: employee.employeeType === 'supervisor' };
+};
+
+exports.getProcessSteps = async (req: any, res: any, next: any) => {
+    try {
+        const { company } = await resolveProcessStepsActor(req);
+        if (!company) {
+            return next(new AppError(404, 'fail', 'No company found for this account'), req, res, next);
+        }
+        res.status(200).json({
+            status: 'success',
+            data: {
+                processSteps: company.processSteps || []
+            }
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+exports.updateProcessSteps = async (req: any, res: any, next: any) => {
+    try {
+        const { company, canWrite } = await resolveProcessStepsActor(req);
+        if (!company) {
+            return next(new AppError(404, 'fail', 'No company found for this account'), req, res, next);
+        }
+        if (!canWrite) {
+            return next(new AppError(403, 'fail', 'Only a Supervisor or company admin may edit process step labels'), req, res, next);
+        }
+
+        const steps = Array.isArray(req.body?.processSteps) ? req.body.processSteps : null;
+        if (!steps || steps.length < 1 || steps.length > 10) {
+            return next(new AppError(400, 'fail', 'processSteps must be an array of 1 to 10 steps'), req, res, next);
+        }
+
+        const cleaned = steps.map((step: any) => ({
+            entity: String(step?.entity || '').trim(),
+            type: String(step?.type || '').trim()
+        }));
+
+        const invalidIndex = cleaned.findIndex((step: any) => !step.entity || !step.type);
+        if (invalidIndex !== -1) {
+            return next(new AppError(400, 'fail', `Step ${invalidIndex + 1} needs both an entity and a type`), req, res, next);
+        }
+
+        company.processSteps = cleaned;
+        await company.save();
+
+        res.status(200).json({
+            status: 'success',
+            data: {
+                processSteps: company.processSteps
+            }
+        });
     } catch (error) {
         next(error);
     }
