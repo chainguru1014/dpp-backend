@@ -30,5 +30,6 @@ router.get('/audit-log', protect, restrictToEmployeeRoleOrCompany('manager', 'ad
 router.post('/employees', protect, restrictTo('Company'), EmployeeController.invite);
 router.get('/employees', protect, restrictTo('Company'), EmployeeController.list);
 router.patch('/employees/:id', protect, restrictTo('Company'), EmployeeController.update);
+router.delete('/employees/:id', protect, restrictTo('Company'), EmployeeController.remove);
 
 module.exports = router;

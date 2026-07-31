@@ -59,7 +59,10 @@ exports.invite = async (req: any, res: any, next: any) => {
             return res.status(400).json({ status: 'fail', message: 'employeeType must be working_employee or supervisor' });
         }
 
-        const requester = await Company.findById(req.user.id).select('role');
+        // Must include allowedEmailDomains — resolveInviteCompany returns this
+        // same doc as `company` for a non-super requester, and the domain
+        // check right below reads company.allowedEmailDomains off it.
+        const requester = await Company.findById(req.user.id).select('role allowedEmailDomains');
         if (!requester) {
             return res.status(404).json({ status: 'fail', message: 'Company not found' });
         }
@@ -157,7 +160,7 @@ exports.update = async (req: any, res: any, next: any) => {
             return next(new AppError(403, 'fail', 'You do not have permission to manage this employee'));
         }
 
-        const { role, employeeType, isActive, employeeCode } = req.body || {};
+        const { role, employeeType, isActive, employeeCode, email } = req.body || {};
         if (role !== undefined) {
             if (!['staff', 'manager', 'admin'].includes(role)) {
                 return res.status(400).json({ status: 'fail', message: 'role must be staff, manager, or admin' });
@@ -170,6 +173,22 @@ exports.update = async (req: any, res: any, next: any) => {
             }
             employee.employeeType = employeeType;
         }
+        if (email !== undefined) {
+            const normalized = String(email).trim().toLowerCase();
+            if (!normalized || !normalized.includes('@')) {
+                return res.status(400).json({ status: 'fail', message: 'A valid email is required' });
+            }
+            const newHash = hashEmail(normalized);
+            if (newHash !== employee.emailHash) {
+                const clash = await Employee.findOne({ emailHash: newHash, _id: { $ne: employee._id } });
+                if (clash) {
+                    return res.status(409).json({ status: 'fail', message: 'This email is already provisioned for another employee' });
+                }
+            }
+            employee.email = normalized;
+            employee.emailHash = newHash;
+            employee.emailDomain = emailDomain(normalized);
+        }
         if (isActive !== undefined) employee.isActive = !!isActive;
         if (employeeCode !== undefined) employee.employeeCode = employeeCode;
         await employee.save();
@@ -177,6 +196,32 @@ exports.update = async (req: any, res: any, next: any) => {
         await appendAuditLog(employee._id, 'updated', { role: employee.role, employeeType: employee.employeeType, isActive: employee.isActive, by: String(req.user.id) }, req.ip);
 
         return res.status(200).json({ status: 'success', data: buildEmployeeResponse(employee) });
+    } catch (error) {
+        next(error);
+    }
+};
+
+// DELETE /employee-auth/employees/:id — removes an employee's roster entry.
+// Ownership-checked the same way update() is.
+exports.remove = async (req: any, res: any, next: any) => {
+    try {
+        const employee = await Employee.findById(req.params.id);
+        if (!employee) {
+            return next(new AppError(404, 'fail', 'Employee not found'));
+        }
+
+        const requester = await Company.findById(req.user.id).select('role');
+        if (!requester) {
+            return next(new AppError(404, 'fail', 'Company not found'));
+        }
+        if (requester.role !== 'super' && String(employee.company_id) !== String(requester._id)) {
+            return next(new AppError(403, 'fail', 'You do not have permission to manage this employee'));
+        }
+
+        await Employee.deleteOne({ _id: employee._id });
+        await appendAuditLog(employee._id, 'removed', { by: String(req.user.id) }, req.ip);
+
+        return res.status(200).json({ status: 'success' });
     } catch (error) {
         next(error);
     }
