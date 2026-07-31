@@ -115,7 +115,7 @@ const companySchema = new mongoose.Schema({
             entity: { type: String, trim: true, default: '' },
             type: { type: String, trim: true, default: '' }
         }],
-        default: [{ entity: '', type: '' }]
+        default: [{ entity: '', type: 'general' }]
     }
 });
 

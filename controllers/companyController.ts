@@ -12,6 +12,16 @@ const qrcode = require('qrcode');
 const QRcode = require('../models/qrcodeModel');
 const mongoose = require("mongoose");
 
+// Fixed set of process-step "type" categories — the mobile app translates
+// each key via i18n instead of displaying admin-entered free text, so the
+// value stored here must be one of these keys, not an arbitrary string. Keep
+// in sync with frontend/src/features/process-steps/ProcessStepsPage.js's
+// TYPE_OPTIONS and app/src/screens/EmployeeHomeScreen.tsx's TYPE_LABEL_KEYS.
+const PROCESS_STEP_TYPE_KEYS = [
+    'receiving', 'shipping', 'finalInspection', 'inboundScan', 'packing',
+    'unpacking', 'storeReceipt', 'inspection', 'returnCheck', 'disposal', 'general'
+];
+
 exports.getAllCompanys = base.getAll(Company);
 exports.getCompany = base.getOne(Company);
 
@@ -28,7 +38,15 @@ exports.addCompany = async(req: any, res: any, next: any) => {
         // Create company without any blockchain keys or on-chain minting.
         // Force the role to 'company' — only the built-in admin account is 'super',
         // and clients must not be able to self-assign an elevated role.
-        const doc = await Company.create({ ...req.body, role: 'company' });
+        // Default the Process Step Labels grid to a single step named after
+        // the company itself, rather than the schema's blank placeholder, so
+        // a freshly-registered company already has one usable entry instead
+        // of an empty/unlabeled tile.
+        const doc = await Company.create({
+            ...req.body,
+            role: 'company',
+            processSteps: [{ entity: String(req.body?.name || '').trim(), type: 'general' }]
+        });
 
         // Best-effort: provision a default Supervisor employee from the
         // company's own contact email, so a freshly-registered company has
@@ -85,7 +103,12 @@ exports.addCompany = async(req: any, res: any, next: any) => {
 const resolveProcessStepsActor = async (req: any) => {
     if (req.user.actorKind === 'Company') {
         const company = await Company.findById(req.user.id);
-        if (!company || company.role === 'super') {
+        // A platform super-admin (role: 'super') still owns its own company
+        // doc/products (see employeeController's cross-company visibility for
+        // the *elevated* side of 'super' — this is the other direction: it
+        // must not lose its own company-scoped features, process steps
+        // included, just for holding that extra privilege).
+        if (!company) {
             return { company: null, canWrite: false };
         }
         return { company, canWrite: true };
@@ -140,6 +163,11 @@ exports.updateProcessSteps = async (req: any, res: any, next: any) => {
         const invalidIndex = cleaned.findIndex((step: any) => !step.entity || !step.type);
         if (invalidIndex !== -1) {
             return next(new AppError(400, 'fail', `Step ${invalidIndex + 1} needs both an entity and a type`), req, res, next);
+        }
+
+        const invalidTypeIndex = cleaned.findIndex((step: any) => !PROCESS_STEP_TYPE_KEYS.includes(step.type));
+        if (invalidTypeIndex !== -1) {
+            return next(new AppError(400, 'fail', `Step ${invalidTypeIndex + 1} has an unrecognized type`), req, res, next);
         }
 
         company.processSteps = cleaned;
