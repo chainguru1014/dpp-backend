@@ -17,6 +17,9 @@ const buildEmployeeResponse = (employee: any) => ({
     terminalId: employee.terminalId,
     lastLoginAt: employee.lastLoginAt
 });
+// Exported so authController's unified /auth/otp/* endpoints can build the
+// same response shape for an Employee owner — see findOtpOwner there.
+exports.buildEmployeeResponse = buildEmployeeResponse;
 
 // POST /employee-auth/otp/request — corporate-SSO entry point. Admin-provisioned
 // only: this only succeeds for an emailHash a company admin already created via

@@ -2,10 +2,14 @@ const { OAuth2Client } = require('google-auth-library');
 const appleSignin = require('apple-signin-auth');
 const User = require('../models/userModel');
 const Company = require('../models/companyModel');
+const Employee = require('../models/employeeModel');
 const AppError = require('../utils/appError');
 const { buildUserResponse, buildCompanyResponse, signJwt } = require('../utils/authShared');
 const { findOrLinkOrCreateByEmail, normalizeEmail } = require('../utils/authLink');
+const { emailDomain, hashEmail } = require('../utils/pii');
 const { generateOtp, sendOtpEmail, OTP_EXPIRY_MINUTES } = require('../utils/otp');
+const { appendAuditLog } = require('../utils/employeeAuditLog');
+const { buildEmployeeResponse } = require('./employeeAuthController');
 
 const normalizeUsername = (value: any) => (typeof value === 'string' ? value.trim() : '');
 
@@ -146,6 +150,18 @@ const findOtpOwner = async (email: string) => {
     if (owner) {
         return { owner, actorKind: 'Company' };
     }
+    // Corporate employees are a separate collection, matched by a one-way
+    // hash of the email (the plaintext address is never stored for lookup —
+    // see utils/pii.ts) rather than a direct `email` field match. This is
+    // what lets the app's single login screen recognize a corporate address
+    // without a separate "Staff" flow — see employeeAuthController.otpRequest
+    // for the same domain/isActive checks, mirrored here.
+    const domain = emailDomain(email);
+    const employeeHash = hashEmail(email);
+    const employee = await Employee.findOne({ emailHash: employeeHash }).select('+otpCode +otpExpiresAt +otpAttempts +otpResendAt');
+    if (employee && employee.emailDomain === domain && employee.isActive) {
+        return { owner: employee, actorKind: 'Employee' };
+    }
     return { owner: null, actorKind: null };
 };
 
@@ -249,7 +265,7 @@ exports.otpVerify = async (req: any, res: any, next: any) => {
             return res.status(400).json({ status: 'fail', message: 'email and code are required' });
         }
 
-        const { owner } = await findOtpOwner(email);
+        const { owner, actorKind } = await findOtpOwner(email);
 
         if (!owner || !owner.otpCode || !owner.otpExpiresAt) {
             return res.status(400).json({ status: 'fail', message: 'No pending code for this email. Request a new one.' });
@@ -284,6 +300,26 @@ exports.otpVerify = async (req: any, res: any, next: any) => {
         owner.otpAttempts = 0;
         owner.otpResendAt = undefined;
         owner.emailVerified = true;
+
+        // Employee is a schema-incompatible collection with findOrLinkOrCreateByEmail
+        // (User/Company only) — build its response the same way
+        // employeeAuthController.otpVerify does, in the same envelope shape
+        // sendAuthResponse uses, so the app's existing response handling
+        // works unchanged for either actor kind.
+        if (actorKind === 'Employee') {
+            owner.lastLoginAt = new Date();
+            await owner.save();
+            await appendAuditLog(owner._id, 'login', { emailDomain: owner.emailDomain }, req.ip);
+            const token = signJwt({ id: owner._id, actorKind: 'Employee', role: owner.role });
+            return res.status(200).json({
+                status: 'success',
+                token,
+                user: buildEmployeeResponse(owner),
+                actorKind: 'Employee',
+                message: 'Login successful'
+            });
+        }
+
         await owner.save();
 
         const result = await findOrLinkOrCreateByEmail({ email, provider: 'otp' });
