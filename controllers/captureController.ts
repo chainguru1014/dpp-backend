@@ -67,7 +67,7 @@ exports.create = async (req: any, res: any, next: any) => {
             }
             : undefined;
 
-        const workerLabel = employee.employeeCode || (employee.email ? employee.email.split('@')[0] : 'Unknown');
+        const workerLabel = employee.name || employee.employeeCode || (employee.email ? employee.email.split('@')[0] : 'Unknown');
 
         const doc = await CaptureRecord.create({
             company_id: company._id,

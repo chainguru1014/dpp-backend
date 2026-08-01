@@ -13,6 +13,7 @@ const buildEmployeeResponse = (employee: any) => ({
     company_id: employee.company_id?._id || employee.company_id,
     companyName: employee.company_id?.name,
     employeeCode: employee.employeeCode,
+    name: employee.name || null,
     role: employee.role,
     employeeType: employee.employeeType,
     isActive: employee.isActive,
@@ -95,6 +96,7 @@ exports.invite = async (req: any, res: any, next: any) => {
             employee.role = role;
             employee.employeeType = employeeType;
             employee.employeeCode = req.body?.employeeCode || employee.employeeCode;
+            employee.name = req.body?.name || employee.name;
             employee.isActive = true;
             await employee.save();
         } else {
@@ -106,6 +108,7 @@ exports.invite = async (req: any, res: any, next: any) => {
                 emailDomain: domain,
                 company_id: company._id,
                 employeeCode: req.body?.employeeCode,
+                name: req.body?.name,
                 role,
                 employeeType,
                 isActive: true,
@@ -160,7 +163,7 @@ exports.update = async (req: any, res: any, next: any) => {
             return next(new AppError(403, 'fail', 'You do not have permission to manage this employee'));
         }
 
-        const { role, employeeType, isActive, employeeCode, email } = req.body || {};
+        const { role, employeeType, isActive, employeeCode, name, email } = req.body || {};
         if (role !== undefined) {
             if (!['staff', 'manager', 'admin'].includes(role)) {
                 return res.status(400).json({ status: 'fail', message: 'role must be staff, manager, or admin' });
@@ -191,6 +194,7 @@ exports.update = async (req: any, res: any, next: any) => {
         }
         if (isActive !== undefined) employee.isActive = !!isActive;
         if (employeeCode !== undefined) employee.employeeCode = employeeCode;
+        if (name !== undefined) employee.name = name;
         await employee.save();
 
         await appendAuditLog(employee._id, 'updated', { role: employee.role, employeeType: employee.employeeType, isActive: employee.isActive, by: String(req.user.id) }, req.ip);

@@ -36,6 +36,12 @@ const employeeSchema = new mongoose.Schema({
     employeeCode: {
         type: String
     },
+    // Display name, set by an admin at invite time — shown as "Worker" in the
+    // mobile app's corporate capture/review screens (captureController
+    // snapshots this onto each CaptureRecord as workerLabel).
+    name: {
+        type: String
+    },
     role: {
         type: String,
         enum: ['staff', 'manager', 'admin'],
@@ -55,10 +61,10 @@ const employeeSchema = new mongoose.Schema({
         type: Boolean,
         default: true
     },
-    // Auto-assigned once at creation (letter+2-digit, e.g. "A07") via
-    // counterModel's per-company sequence — never user-editable, not tied to
-    // a physical device. Shown in the mobile app's corporate scan/review UI
-    // as "Terminal {terminalId}".
+    // Auto-assigned once at creation (a plain incrementing number, "1", "2",
+    // "3", ...) via counterModel's per-company sequence — never
+    // user-editable, not tied to a physical device. Shown in the mobile
+    // app's corporate scan/review UI as "Terminal {terminalId}".
     terminalId: {
         type: String
     },

@@ -11,6 +11,7 @@ const buildEmployeeResponse = (employee: any) => ({
     company_id: employee.company_id?._id || employee.company_id,
     companyName: employee.company_id?.name,
     employeeCode: employee.employeeCode,
+    name: employee.name || null,
     role: employee.role,
     employeeType: employee.employeeType,
     isActive: employee.isActive,

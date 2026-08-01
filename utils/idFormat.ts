@@ -2,12 +2,10 @@
 // capture recording (ref numbers) — both build human-readable IDs on top of
 // counterModel's raw numeric sequences.
 
-// 1 -> "A01", 99 -> "A99", 100 -> "B01", 198 -> "B99", 199 -> "C01" ...
-const formatTerminalId = (seq: number): string => {
-    const letter = String.fromCharCode(65 + Math.floor((seq - 1) / 99));
-    const num = String(((seq - 1) % 99) + 1).padStart(2, '0');
-    return `${letter}${num}`;
-};
+// Plain per-company incrementing employee number ("1", "2", "3", ...) —
+// shown in the app as "Terminal {terminalId}". Previously a letter+2-digit
+// code (e.g. "A07"); simplified to a bare number per explicit request.
+const formatTerminalId = (seq: number): string => String(seq);
 
 // "Colombo Plant" -> "COL". Falls back to "GEN" if the entity has no letters.
 const deriveEntityCode = (entity: string): string => {
