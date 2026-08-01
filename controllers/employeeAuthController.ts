@@ -7,6 +7,7 @@ const { appendAuditLog } = require('../utils/employeeAuditLog');
 
 const buildEmployeeResponse = (employee: any) => ({
     _id: employee._id,
+    email: employee.email || null,
     emailDomain: employee.emailDomain,
     company_id: employee.company_id?._id || employee.company_id,
     companyName: employee.company_id?.name,
