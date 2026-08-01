@@ -57,6 +57,7 @@ exports.create = async (req: any, res: any, next: any) => {
                 latitude: req.body.location.latitude ?? null,
                 longitude: req.body.location.longitude ?? null,
                 accuracy: req.body.location.accuracy ?? null,
+                address: String(req.body.location.address || ''),
             }
             : undefined;
         const device = req.body?.device && typeof req.body.device === 'object'
@@ -82,6 +83,8 @@ exports.create = async (req: any, res: any, next: any) => {
             rawValue,
             identifierType,
             imagePath: String(req.body?.imagePath || ''),
+            productId: String(req.body?.productId || ''),
+            qrcodeId: String(req.body?.qrcodeId || ''),
             location,
             device,
             terminalId: employee.terminalId || '',

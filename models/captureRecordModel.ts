@@ -59,11 +59,28 @@ const captureRecordSchema = new mongoose.Schema({
         type: String,
         default: ''
     },
+    // Resolved at capture time (see captureController.create's Result-screen
+    // navigation needs) — the same product a worker's scan already had to
+    // resolve to before Capture was even enabled (see the app's
+    // verifyScannedCode). Optional: only set when the scanned code carried a
+    // product/qrcode identifier (a QR does; a bare barcode looked up via
+    // pmc/lookup may not).
+    productId: {
+        type: String,
+        default: ''
+    },
+    qrcodeId: {
+        type: String,
+        default: ''
+    },
     // Best-effort — blank when the device/browser couldn't provide it.
     location: {
         latitude: { type: Number, default: null },
         longitude: { type: Number, default: null },
-        accuracy: { type: Number, default: null }
+        accuracy: { type: Number, default: null },
+        // Reverse-geocoded human-readable address (e.g. "New York, US"),
+        // resolved app-side at capture time — see app/src/utils/deviceCapture.ts.
+        address: { type: String, default: '' }
     },
     device: {
         model: { type: String, default: '' },
