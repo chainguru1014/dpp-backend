@@ -5,22 +5,15 @@ const AppError = require('../utils/appError');
 const CONSUMER_LOCATION_STEPS_KEY = 'consumerLocationSteps';
 const MAX_STEPS = 6;
 
-// Fixed set of location-type categories for the consumer app's Home page
-// tiles — the app translates each key via i18n instead of displaying
-// admin-entered free text. Keep in sync with frontend/src/features/
-// consumer-steps/ConsumerLocationStepsPage.js's TYPE_OPTIONS and
-// app/src/screens/HomeScreen.tsx's TYPE_LABEL_KEYS.
-const CONSUMER_LOCATION_TYPE_KEYS = ['store', 'factory', 'warehouse', 'p2p', 'home', 'other'];
-
-// What ships until a super admin edits this for the first time — the same
-// six items the consumer Home page hardcoded before this became configurable.
+// Name only — no fixed type/category here (unlike the corporate per-company
+// process steps), per explicit "manage name only" request.
 const DEFAULT_STEPS = [
-    { entity: 'Store', type: 'store' },
-    { entity: 'Factory', type: 'factory' },
-    { entity: 'Warehouse', type: 'warehouse' },
-    { entity: 'P2P', type: 'p2p' },
-    { entity: 'Home', type: 'home' },
-    { entity: 'Other', type: 'other' }
+    { entity: 'Store' },
+    { entity: 'Factory' },
+    { entity: 'Warehouse' },
+    { entity: 'P2P' },
+    { entity: 'Home' },
+    { entity: 'Other' }
 ];
 
 // GET /platform-settings/consumer-location-steps — public (no auth): the
@@ -56,18 +49,12 @@ exports.updateConsumerLocationSteps = async (req: any, res: any, next: any) => {
         }
 
         const cleaned = steps.map((step: any) => ({
-            entity: String(step?.entity || '').trim(),
-            type: String(step?.type || '').trim()
+            entity: String(step?.entity || '').trim()
         }));
 
-        const invalidIndex = cleaned.findIndex((step: any) => !step.entity || !step.type);
+        const invalidIndex = cleaned.findIndex((step: any) => !step.entity);
         if (invalidIndex !== -1) {
-            return next(new AppError(400, 'fail', `Step ${invalidIndex + 1} needs both an entity and a type`), req, res, next);
-        }
-
-        const invalidTypeIndex = cleaned.findIndex((step: any) => !CONSUMER_LOCATION_TYPE_KEYS.includes(step.type));
-        if (invalidTypeIndex !== -1) {
-            return next(new AppError(400, 'fail', `Step ${invalidTypeIndex + 1} has an unrecognized type`), req, res, next);
+            return next(new AppError(400, 'fail', `Step ${invalidIndex + 1} needs a name`), req, res, next);
         }
 
         const doc = await PlatformSettings.findOneAndUpdate(

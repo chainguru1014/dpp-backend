@@ -10,15 +10,12 @@ const platformSettingsSchema = new mongoose.Schema({
         required: true,
         unique: true
     },
-    // Same {entity, type} shape as Company.processSteps (backend/models/
-    // companyModel.ts) — reused here for the consumer app's Home page
-    // location-type tiles, managed by the platform super admin instead of
-    // a per-company Supervisor. `type` must be one of
-    // CONSUMER_LOCATION_TYPE_KEYS (see platformSettingsController.ts).
+    // Name only (no type/category, unlike Company.processSteps) — the
+    // consumer app's Home page location tiles, managed by the platform
+    // super admin instead of a per-company Supervisor.
     processSteps: {
         type: [{
-            entity: { type: String, trim: true, default: '' },
-            type: { type: String, trim: true, default: '' }
+            entity: { type: String, trim: true, default: '' }
         }],
         default: []
     }
