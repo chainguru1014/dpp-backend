@@ -22,13 +22,6 @@ const buildEmployeeResponse = (employee: any) => ({
     createdAt: employee.createdAt
 });
 
-/** Determines which Company an invite should be provisioned under.
- * - A normal Company account may only provision into its own roster.
- * - The platform "super" account has no roster of its own, so instead of
- *   requiring a manually-picked target company, it auto-detects one by
- *   matching the invited email's domain against every registered company's
- *   Allowed Staff Email Domains (excluding super/admin accounts, which never
- *   take on staff of their own). */
 /** Resolves the Company doc a roster request (invite/list/update/remove) acts
  * against, and whether the requester may WRITE to it. Mirrors
  * companyController.resolveProcessStepsActor's actorKind branching: a Company
@@ -94,6 +87,12 @@ exports.invite = async (req: any, res: any, next: any) => {
         if (!canWrite) {
             return res.status(403).json({ status: 'fail', message: 'Only a Supervisor or company admin may manage staff' });
         }
+        // A Supervisor (actorKind 'Employee' reaching this point is always one —
+        // canWrite above already excludes a working_employee) may only manage
+        // working employees, never provision or edit another Supervisor.
+        if (req.user.actorKind === 'Employee' && employeeType === 'supervisor') {
+            return res.status(403).json({ status: 'fail', message: 'A Supervisor may only manage working employees, not other Supervisors' });
+        }
 
         const domain = emailDomain(email);
         let company: any;
@@ -115,6 +114,9 @@ exports.invite = async (req: any, res: any, next: any) => {
 
         if (employee && String(employee.company_id) !== String(company._id)) {
             return res.status(409).json({ status: 'fail', message: 'This email is already provisioned under a different company' });
+        }
+        if (employee && req.user.actorKind === 'Employee' && employee.employeeType === 'supervisor') {
+            return res.status(403).json({ status: 'fail', message: 'A Supervisor may only manage working employees, not other Supervisors' });
         }
 
         let isNew = false;
@@ -166,7 +168,12 @@ exports.list = async (req: any, res: any, next: any) => {
         if (!canWrite) {
             return next(new AppError(403, 'fail', 'Only a Supervisor or company admin may view staff'));
         }
-        const filter = requester.role === 'super' ? {} : { company_id: requester._id };
+        const filter: any = requester.role === 'super' ? {} : { company_id: requester._id };
+        // A Supervisor only manages working employees, so other Supervisors
+        // (including themselves) never appear in their own roster view.
+        if (req.user.actorKind === 'Employee') {
+            filter.employeeType = 'working_employee';
+        }
         const employees = await Employee.find(filter)
             .sort({ createdAt: -1 })
             .populate({ path: 'company_id', select: 'name' });
@@ -195,8 +202,14 @@ exports.update = async (req: any, res: any, next: any) => {
         if (requester.role !== 'super' && String(employee.company_id) !== String(requester._id)) {
             return next(new AppError(403, 'fail', 'You do not have permission to manage this employee'));
         }
+        if (req.user.actorKind === 'Employee' && employee.employeeType === 'supervisor') {
+            return next(new AppError(403, 'fail', 'A Supervisor may only manage working employees, not other Supervisors'));
+        }
 
         const { role, employeeType, isActive, employeeCode, name, email } = req.body || {};
+        if (req.user.actorKind === 'Employee' && employeeType === 'supervisor') {
+            return res.status(403).json({ status: 'fail', message: 'A Supervisor may not promote an employee to Supervisor' });
+        }
         if (role !== undefined) {
             if (!['staff', 'manager', 'admin'].includes(role)) {
                 return res.status(400).json({ status: 'fail', message: 'role must be staff, manager, or admin' });
@@ -259,6 +272,9 @@ exports.remove = async (req: any, res: any, next: any) => {
         }
         if (req.user.actorKind === 'Employee' && String(employee._id) === String(req.user.id)) {
             return next(new AppError(400, 'fail', 'You cannot remove your own account'));
+        }
+        if (req.user.actorKind === 'Employee' && employee.employeeType === 'supervisor') {
+            return next(new AppError(403, 'fail', 'A Supervisor may only manage working employees, not other Supervisors'));
         }
 
         await Employee.deleteOne({ _id: employee._id });
