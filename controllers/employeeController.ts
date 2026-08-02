@@ -29,6 +29,30 @@ const buildEmployeeResponse = (employee: any) => ({
  *   matching the invited email's domain against every registered company's
  *   Allowed Staff Email Domains (excluding super/admin accounts, which never
  *   take on staff of their own). */
+/** Resolves the Company doc a roster request (invite/list/update/remove) acts
+ * against, and whether the requester may WRITE to it. Mirrors
+ * companyController.resolveProcessStepsActor's actorKind branching: a Company
+ * actor manages its own roster directly; an Employee actor may only manage
+ * their own company's roster, and only if they're a Supervisor. */
+const resolveRosterActor = async (req: any) => {
+    if (req.user.actorKind === 'Company') {
+        const company = await Company.findById(req.user.id).select('role allowedEmailDomains');
+        if (!company) {
+            return { company: null, canWrite: false };
+        }
+        return { company, canWrite: true };
+    }
+    const employee = await Employee.findById(req.user.id).select('company_id employeeType');
+    if (!employee) {
+        return { company: null, canWrite: false };
+    }
+    const company = await Company.findById(employee.company_id).select('role allowedEmailDomains');
+    if (!company) {
+        return { company: null, canWrite: false };
+    }
+    return { company, canWrite: employee.employeeType === 'supervisor' };
+};
+
 const resolveInviteCompany = async (requester: any, domain: string) => {
     if (requester.role !== 'super') {
         return requester;
@@ -63,9 +87,12 @@ exports.invite = async (req: any, res: any, next: any) => {
         // Must include allowedEmailDomains — resolveInviteCompany returns this
         // same doc as `company` for a non-super requester, and the domain
         // check right below reads company.allowedEmailDomains off it.
-        const requester = await Company.findById(req.user.id).select('role allowedEmailDomains');
+        const { company: requester, canWrite } = await resolveRosterActor(req);
         if (!requester) {
             return res.status(404).json({ status: 'fail', message: 'Company not found' });
+        }
+        if (!canWrite) {
+            return res.status(403).json({ status: 'fail', message: 'Only a Supervisor or company admin may manage staff' });
         }
 
         const domain = emailDomain(email);
@@ -132,9 +159,12 @@ exports.invite = async (req: any, res: any, next: any) => {
 // company's employees instead (each row's company name comes along via populate).
 exports.list = async (req: any, res: any, next: any) => {
     try {
-        const requester = await Company.findById(req.user.id).select('role');
+        const { company: requester, canWrite } = await resolveRosterActor(req);
         if (!requester) {
             return next(new AppError(404, 'fail', 'Company not found'));
+        }
+        if (!canWrite) {
+            return next(new AppError(403, 'fail', 'Only a Supervisor or company admin may view staff'));
         }
         const filter = requester.role === 'super' ? {} : { company_id: requester._id };
         const employees = await Employee.find(filter)
@@ -155,9 +185,12 @@ exports.update = async (req: any, res: any, next: any) => {
             return next(new AppError(404, 'fail', 'Employee not found'));
         }
 
-        const requester = await Company.findById(req.user.id).select('role');
+        const { company: requester, canWrite } = await resolveRosterActor(req);
         if (!requester) {
             return next(new AppError(404, 'fail', 'Company not found'));
+        }
+        if (!canWrite) {
+            return next(new AppError(403, 'fail', 'Only a Supervisor or company admin may manage staff'));
         }
         if (requester.role !== 'super' && String(employee.company_id) !== String(requester._id)) {
             return next(new AppError(403, 'fail', 'You do not have permission to manage this employee'));
@@ -214,12 +247,18 @@ exports.remove = async (req: any, res: any, next: any) => {
             return next(new AppError(404, 'fail', 'Employee not found'));
         }
 
-        const requester = await Company.findById(req.user.id).select('role');
+        const { company: requester, canWrite } = await resolveRosterActor(req);
         if (!requester) {
             return next(new AppError(404, 'fail', 'Company not found'));
         }
+        if (!canWrite) {
+            return next(new AppError(403, 'fail', 'Only a Supervisor or company admin may manage staff'));
+        }
         if (requester.role !== 'super' && String(employee.company_id) !== String(requester._id)) {
             return next(new AppError(403, 'fail', 'You do not have permission to manage this employee'));
+        }
+        if (req.user.actorKind === 'Employee' && String(employee._id) === String(req.user.id)) {
+            return next(new AppError(400, 'fail', 'You cannot remove your own account'));
         }
 
         await Employee.deleteOne({ _id: employee._id });

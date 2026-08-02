@@ -24,12 +24,15 @@ router.post('/otp/request', otpRequestLimiter, EmployeeAuthController.otpRequest
 router.post('/otp/verify', otpVerifyLimiter, EmployeeAuthController.otpVerify);
 router.get('/audit-log', protect, restrictToEmployeeRoleOrCompany('manager', 'admin'), EmployeeAuditLogController.list);
 
-// Roster management — Company (brand admin) accounts only. This is the only
-// way an employee record is ever created; see employeeAuthController.otpRequest,
-// which refuses to send a code for anyone not provisioned here first.
-router.post('/employees', protect, restrictTo('Company'), EmployeeController.invite);
-router.get('/employees', protect, restrictTo('Company'), EmployeeController.list);
-router.patch('/employees/:id', protect, restrictTo('Company'), EmployeeController.update);
-router.delete('/employees/:id', protect, restrictTo('Company'), EmployeeController.remove);
+// Roster management — Company (brand admin) accounts, or an Employee acting
+// as their company's Supervisor (see resolveRosterActor's canWrite check in
+// employeeController.ts, which 403s a working_employee actor). This is the
+// only way an employee record is ever created; see
+// employeeAuthController.otpRequest, which refuses to send a code for anyone
+// not provisioned here first.
+router.post('/employees', protect, restrictTo('Company', 'Employee'), EmployeeController.invite);
+router.get('/employees', protect, restrictTo('Company', 'Employee'), EmployeeController.list);
+router.patch('/employees/:id', protect, restrictTo('Company', 'Employee'), EmployeeController.update);
+router.delete('/employees/:id', protect, restrictTo('Company', 'Employee'), EmployeeController.remove);
 
 module.exports = router;

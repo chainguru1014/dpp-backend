@@ -45,6 +45,10 @@ exports.addCompany = async(req: any, res: any, next: any) => {
         const doc = await Company.create({
             ...req.body,
             role: 'company',
+            // A company created here is always created by the super admin
+            // (POST /company has no self-signup path), so it's approved
+            // immediately rather than sitting in a manual-approval queue.
+            isVerified: true,
             processSteps: [{ entity: String(req.body?.name || '').trim(), type: 'general' }]
         });
 
@@ -72,6 +76,7 @@ exports.addCompany = async(req: any, res: any, next: any) => {
                         emailHash,
                         emailDomain: domain,
                         company_id: doc._id,
+                        name: `${String(req.body?.name || '').trim()} admin`,
                         role: 'admin',
                         employeeType: 'supervisor',
                         isActive: true,
