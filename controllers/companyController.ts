@@ -156,8 +156,8 @@ exports.updateProcessSteps = async (req: any, res: any, next: any) => {
         }
 
         const steps = Array.isArray(req.body?.processSteps) ? req.body.processSteps : null;
-        if (!steps || steps.length < 1 || steps.length > 10) {
-            return next(new AppError(400, 'fail', 'processSteps must be an array of 1 to 10 steps'), req, res, next);
+        if (!steps || steps.length < 1 || steps.length > 18) {
+            return next(new AppError(400, 'fail', 'processSteps must be an array of 1 to 18 steps'), req, res, next);
         }
 
         const cleaned = steps.map((step: any) => ({
