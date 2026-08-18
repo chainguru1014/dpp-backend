@@ -503,6 +503,11 @@ exports.getScanHistory = async (req: any, res: any, next: any) => {
 // PROCESS_STEP_TYPE_KEYS in companyController.ts.
 const ITEM_CATEGORY_KEYS = ['denim', 'tops', 'bottoms', 'outerwear', 'others'];
 
+// Default Traceability Overview destination columns — always shown in this
+// order regardless of actual scan data, with everything else folded into
+// "Others".
+const DEFAULT_DESTINATION_COUNTRIES = ['Germany', 'France', 'Netherlands', 'Spain', 'United Kingdom'];
+
 exports.getAnalytics = async (req: any, res: any, next: any) => {
     try {
         const DAYS = 30;
@@ -726,9 +731,10 @@ exports.getAnalytics = async (req: any, res: any, next: any) => {
         const categoryBreakdown = ITEM_CATEGORY_KEYS.map((key) => ({ category: key, count: categoryCountMap[key] || 0 }));
 
         const countryBreakdown = countryAgg.map((c: any) => ({ country: c._id, count: c.count }));
-        // Table columns use the top 5 destination countries overall (whatever
-        // they happen to be for this data), with everything else in "Others".
-        const topDestinationCountries = countryBreakdown.slice(0, 5).map((c: any) => c.country);
+        // Table columns are always these 5 default EU markets, with
+        // everything else (including any of these 5 with zero scans) folded
+        // in as needed — not computed dynamically from actual scan volume.
+        const topDestinationCountries = DEFAULT_DESTINATION_COUNTRIES;
 
         const traceabilityOverview = traceRowsAgg.map((row: any) => {
             const destinationBreakdown: any = {};
