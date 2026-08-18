@@ -28,6 +28,29 @@ const productSchema = new mongoose.Schema({
     detail: {
         type: String,
     },
+    // Structured product-detail facts shown as icon rows on the product card
+    // (Material / Fit / Wash / Durability / Traceable product identity) —
+    // additive alongside the free-text `detail` field above, not a replacement.
+    detailFacts: {
+        material: { type: String, default: '' },
+        fit: { type: String, default: '' },
+        wash: { type: String, default: '' },
+        durability: { type: String, default: '' },
+        traceableIdentity: { type: String, default: '' }
+    },
+    // Fixed category list (dashboard groups/filters by this) — mirrors the
+    // pattern used for process-step "type" in companyController.ts.
+    itemCategory: {
+        type: String,
+        enum: ['denim', 'tops', 'bottoms', 'outerwear', 'others'],
+        default: 'others'
+    },
+    // Free-text style/SKU code (e.g. "DNM-2501-01"), shown on the dashboard's
+    // Traceability Overview table and the products list.
+    skuStyleNumber: {
+        type: String,
+        default: ''
+    },
     brandInfo: {
         name: {
             type: String,

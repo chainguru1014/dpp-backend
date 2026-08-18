@@ -16,6 +16,28 @@ const numThreads = 4;
 
 const delay = (ms : any) => new Promise(resolve => setTimeout(resolve, ms))
 
+// Fixed category list (mirrors PROCESS_STEP_TYPE_KEYS in companyController.ts)
+// plus a matching SKU/style-number prefix, e.g. "DNM-2501-01".
+const ITEM_CATEGORY_PREFIXES: { [key: string]: string } = {
+    denim: 'DNM',
+    tops: 'TSH',
+    bottoms: 'BOT',
+    outerwear: 'OUT',
+    others: 'OTH',
+};
+const ITEM_CATEGORY_KEYS = Object.keys(ITEM_CATEGORY_PREFIXES);
+
+function randomItemCategory() {
+    return ITEM_CATEGORY_KEYS[Math.floor(Math.random() * ITEM_CATEGORY_KEYS.length)];
+}
+
+function randomSkuStyleNumber(category: string) {
+    const prefix = ITEM_CATEGORY_PREFIXES[category] || 'OTH';
+    const yymm = String(Math.floor(2401 + Math.random() * 700)); // e.g. 2501-2601-ish spread
+    const seq = String(Math.floor(1 + Math.random() * 99)).padStart(2, '0');
+    return `${prefix}-${yymm}-${seq}`;
+}
+
 exports.getAllProducts = async(req: any, res: any, next: any) => {
     try {
         const mongoose = require('mongoose');
@@ -170,6 +192,12 @@ exports.addProduct = async(req: any, res: any, next: any) => {
 
         let product = req.body;
         product.total_minted_amount = 0;
+        if (!product.itemCategory) {
+            product.itemCategory = randomItemCategory();
+        }
+        if (!product.skuStyleNumber) {
+            product.skuStyleNumber = randomSkuStyleNumber(product.itemCategory);
+        }
 
         console.log(product);
         const data = await Product.findOne({ name: product.name, detail: product.detail });

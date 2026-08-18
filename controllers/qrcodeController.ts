@@ -482,9 +482,13 @@ exports.getScanHistory = async (req: any, res: any, next: any) => {
  * Dashboard analytics: totals, scans-per-day series, source / security /
  * reaction / audience breakdowns, and top products / brands by scans.
  */
+// Fixed category list — mirrors backend/controllers/productController.ts and
+// PROCESS_STEP_TYPE_KEYS in companyController.ts.
+const ITEM_CATEGORY_KEYS = ['denim', 'tops', 'bottoms', 'outerwear', 'others'];
+
 exports.getAnalytics = async (req: any, res: any, next: any) => {
     try {
-        const DAYS = 14;
+        const DAYS = 30;
         const since = new Date();
         since.setHours(0, 0, 0, 0);
         since.setDate(since.getDate() - (DAYS - 1));
@@ -492,8 +496,39 @@ exports.getAnalytics = async (req: any, res: any, next: any) => {
         // Optional owner scope: when present, every metric is restricted to the
         // owner's products (used by company/user dashboards).
         const ownerScope = await resolveOwnerProductMatch(req);
-        const pFilter = ownerScope ? ownerScope.filter : {};
-        const scanScopeStage = ownerScope ? [{ $match: pFilter }] : [];
+        let pFilter: any = ownerScope ? ownerScope.filter : {};
+
+        // Optional Traceability Overview filters (date range, item category,
+        // origin country, destination country, city) — all applied on top of
+        // the owner scope above. item_category/origin_country live on Product,
+        // so those two are resolved into a product_id $in list first.
+        const q = req.query || {};
+        const scanMatch: any = { ...pFilter };
+        if (q.date_from || q.date_to) {
+            scanMatch.scanned_at = {};
+            if (q.date_from) scanMatch.scanned_at.$gte = new Date(String(q.date_from));
+            if (q.date_to) {
+                const to = new Date(String(q.date_to));
+                to.setHours(23, 59, 59, 999);
+                scanMatch.scanned_at.$lte = to;
+            }
+        }
+        if (q.destination_country) scanMatch['location.country'] = String(q.destination_country);
+        if (q.city) scanMatch['location.city'] = String(q.city);
+        if (q.item_category || q.origin_country) {
+            const productFilter: any = { is_deleted: { $ne: true } };
+            if (ownerScope) productFilter._id = { $in: ownerScope.ids };
+            if (q.item_category) productFilter.itemCategory = String(q.item_category);
+            if (q.origin_country) productFilter['traceabilityEsg.madeIn'] = String(q.origin_country);
+            const matchingIds = await Product.find(productFilter).distinct('_id');
+            scanMatch.product_id = { $in: matchingIds };
+            // Superseded — the resolved id list above already folds in the
+            // owner scope, so drop the separate product_id filter to avoid
+            // an accidental double $in that mongoose can't merge.
+            delete pFilter.product_id;
+        }
+        pFilter = scanMatch;
+        const scanScopeStage = [{ $match: pFilter }];
 
         const [
             totalScans, totalUsers, totalCompanies, totalProducts,
@@ -535,6 +570,68 @@ exports.getAnalytics = async (req: any, res: any, next: any) => {
             ScanRecord.distinct('pmc_code', { pmc_code: { $nin: [null, ''] }, ...pFilter })
         ]);
 
+        // --- Traceability Overview dashboard additions ---
+        const [
+            categoryAgg, countryAgg, uniqueItemsAgg, uniqueSkusAgg, storesAgg, traceRowsAgg,
+            originCountryOptions, cityOptions
+        ] = await Promise.all([
+            ScanRecord.aggregate([
+                ...scanScopeStage,
+                { $lookup: { from: 'products', localField: 'product_id', foreignField: '_id', as: 'p' } },
+                { $unwind: '$p' },
+                { $group: { _id: { $ifNull: ['$p.itemCategory', 'others'] }, count: { $sum: 1 } } },
+                { $sort: { count: -1 } }
+            ]),
+            ScanRecord.aggregate([
+                ...scanScopeStage,
+                { $match: { 'location.country': { $nin: [null, ''] } } },
+                { $group: { _id: '$location.country', count: { $sum: 1 } } },
+                { $sort: { count: -1 } }, { $limit: 10 }
+            ]),
+            ScanRecord.aggregate([
+                ...scanScopeStage,
+                { $match: { qrcode_id: { $ne: null } } },
+                { $group: { _id: { p: '$product_id', q: '$qrcode_id' } } },
+                { $count: 'total' }
+            ]),
+            ScanRecord.aggregate([
+                ...scanScopeStage,
+                { $group: { _id: '$product_id' } },
+                { $lookup: { from: 'products', localField: '_id', foreignField: '_id', as: 'p' } },
+                { $unwind: '$p' },
+                { $match: { 'p.skuStyleNumber': { $nin: [null, ''] } } },
+                { $group: { _id: '$p.skuStyleNumber' } },
+                { $count: 'total' }
+            ]),
+            // No dedicated "retail store" entity exists in this data model —
+            // approximated as distinct (ip, city) pairs seen across scans.
+            ScanRecord.aggregate([
+                ...scanScopeStage,
+                { $match: { ip: { $nin: [null, ''] } } },
+                { $group: { _id: { ip: '$ip', city: '$location.city' } } },
+                { $count: 'total' }
+            ]),
+            ScanRecord.aggregate([
+                ...scanScopeStage,
+                { $lookup: { from: 'products', localField: 'product_id', foreignField: '_id', as: 'p' } },
+                { $unwind: '$p' },
+                { $group: {
+                    _id: '$product_id',
+                    itemCategory: { $first: { $ifNull: ['$p.itemCategory', 'others'] } },
+                    skuStyleNumber: { $first: '$p.skuStyleNumber' },
+                    originCountry: { $first: '$p.traceabilityEsg.madeIn' },
+                    totalScanned: { $sum: 1 },
+                    cities: { $push: '$location.city' },
+                    countries: { $push: '$location.country' },
+                    ips: { $push: '$ip' }
+                }},
+                { $sort: { totalScanned: -1 } },
+                { $limit: 25 }
+            ]),
+            Product.distinct('traceabilityEsg.madeIn', { is_deleted: { $ne: true }, 'traceabilityEsg.madeIn': { $nin: [null, ''] } }),
+            ScanRecord.distinct('location.city', { 'location.city': { $nin: [null, ''] } })
+        ]);
+
         const dayMap: any = {};
         byDayAgg.forEach((d: any) => { dayMap[d._id] = d.count; });
         const scansByDay: any[] = [];
@@ -565,6 +662,48 @@ exports.getAnalytics = async (req: any, res: any, next: any) => {
         const identifierTypes: any = { qr: 0, barcode: 0, nfc: 0, rfid: 0, gs1dl: 0 };
         identifierTypeAgg.forEach((i: any) => { if (identifierTypes[i._id] !== undefined) identifierTypes[i._id] = i.count; });
 
+        // Category donut: fixed key order (ITEM_CATEGORY_KEYS) so the legend
+        // is stable even for categories with zero scans.
+        const categoryCountMap: any = {};
+        categoryAgg.forEach((c: any) => { categoryCountMap[c._id] = c.count; });
+        const categoryBreakdown = ITEM_CATEGORY_KEYS.map((key) => ({ category: key, count: categoryCountMap[key] || 0 }));
+
+        const countryBreakdown = countryAgg.map((c: any) => ({ country: c._id, count: c.count }));
+        // Table columns use the top 5 destination countries overall (whatever
+        // they happen to be for this data), with everything else in "Others".
+        const topDestinationCountries = countryBreakdown.slice(0, 5).map((c: any) => c.country);
+
+        const traceabilityOverview = traceRowsAgg.map((row: any) => {
+            const destinationBreakdown: any = {};
+            topDestinationCountries.forEach((c: string) => { destinationBreakdown[c] = 0; });
+            let others = 0;
+            (row.countries || []).forEach((c: string) => {
+                if (!c) return;
+                if (topDestinationCountries.includes(c)) destinationBreakdown[c] = (destinationBreakdown[c] || 0) + 1;
+                else others += 1;
+            });
+            destinationBreakdown.Others = others;
+
+            const cityCounts: any = {};
+            (row.cities || []).forEach((c: string) => { if (c) cityCounts[c] = (cityCounts[c] || 0) + 1; });
+            const topCities = Object.keys(cityCounts).sort((a, b) => cityCounts[b] - cityCounts[a]).slice(0, 3);
+
+            const storeKeys = new Set((row.ips || []).filter(Boolean).map((ip: string, i: number) => `${ip}|${(row.cities || [])[i] || ''}`));
+
+            return {
+                itemCategory: row.itemCategory,
+                skuStyleNumber: row.skuStyleNumber || '',
+                originCountry: row.originCountry || '',
+                totalScanned: row.totalScanned,
+                destinationBreakdown,
+                topCities,
+                stores: storeKeys.size
+            };
+        });
+
+        const verifiedTotal = security.verified + security.failed;
+        const dataIntegrity = verifiedTotal > 0 ? Math.round((security.verified / verifiedTotal) * 1000) / 10 : 100;
+
         return res.status(200).json({
             status: 'success',
             data: {
@@ -574,7 +713,14 @@ exports.getAnalytics = async (req: any, res: any, next: any) => {
                     companies: totalCompanies,
                     products: totalProducts,
                     uniqueScanners: (uniqueScannerIds || []).filter(Boolean).length,
-                    uniquePmcs: (uniquePmcCodes || []).filter(Boolean).length
+                    uniquePmcs: (uniquePmcCodes || []).filter(Boolean).length,
+                    uniqueItems: uniqueItemsAgg[0]?.total || 0,
+                    uniqueSkus: uniqueSkusAgg[0]?.total || 0,
+                    // See the traceRowsAgg comment above — an estimate, not a
+                    // tracked entity.
+                    retailStores: storesAgg[0]?.total || 0,
+                    countries: countryBreakdown.length,
+                    dataIntegrity
                 },
                 scansByDay,
                 source,
@@ -583,7 +729,16 @@ exports.getAnalytics = async (req: any, res: any, next: any) => {
                 identifierTypes,
                 audience: { loggedIn: loggedInScans, guest: Math.max(0, totalScans - loggedInScans) },
                 topProducts: topProductsAgg,
-                topBrands: topBrandsAgg
+                topBrands: topBrandsAgg,
+                categoryBreakdown,
+                countryBreakdown,
+                traceabilityOverview,
+                filterOptions: {
+                    itemCategories: ITEM_CATEGORY_KEYS,
+                    originCountries: (originCountryOptions || []).filter(Boolean).sort(),
+                    destinationCountries: countryBreakdown.map((c: any) => c.country),
+                    cities: (cityOptions || []).filter(Boolean).sort()
+                }
             }
         });
     } catch (error) {
