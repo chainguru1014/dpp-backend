@@ -369,7 +369,7 @@ exports.getScanHistory = async (req: any, res: any, next: any) => {
     try {
         const {
             page = 1, limit = 25, from, to, product_id, user_id,
-            source, security, reaction, loggedIn, q
+            source, security, reaction, loggedIn, q, username, location
         } = req.query || {};
 
         const pageNum = Math.max(1, parseInt(page) || 1);
@@ -429,6 +429,23 @@ exports.getScanHistory = async (req: any, res: any, next: any) => {
         }
         if (loggedIn === 'true') pipeline.push({ $match: { user_id: { $ne: null } } });
         else if (loggedIn === 'false') pipeline.push({ $match: { user_id: { $in: [null, undefined] } } });
+
+        // Dedicated who/where fields (alongside the catch-all `q` search below)
+        // — who scanned it, and where it was scanned from.
+        if (username && String(username).trim()) {
+            const safe = String(username).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const rx = new RegExp(safe, 'i');
+            pipeline.push({ $match: { $or: [{ 'user.name': rx }, { 'user.email': rx }] } });
+        }
+        if (location && String(location).trim()) {
+            const safe = String(location).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const rx = new RegExp(safe, 'i');
+            pipeline.push({
+                $match: {
+                    $or: [{ 'location.city': rx }, { 'location.region': rx }, { 'location.country': rx }, { ip: rx }]
+                }
+            });
+        }
 
         if (q && String(q).trim()) {
             const safe = String(q).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -632,6 +649,46 @@ exports.getAnalytics = async (req: any, res: any, next: any) => {
             ScanRecord.distinct('location.city', { 'location.city': { $nin: [null, ''] } })
         ]);
 
+        // --- "vs last 30 days" deltas: same 5 cumulative KPIs, but as they
+        // stood 30 days ago (scanned_at <= cutoff), so the dashboard can show
+        // how much each has grown since then. ---
+        const thirtyDaysAgo = new Date();
+        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+        const asOfMatch = { ...pFilter, scanned_at: { ...(pFilter.scanned_at || {}), $lte: thirtyDaysAgo } };
+        const [
+            scansAsOf, uniqueItemsAsOfAgg, uniqueSkusAsOfAgg, storesAsOfAgg, countriesAsOfAgg
+        ] = await Promise.all([
+            ScanRecord.countDocuments(asOfMatch),
+            ScanRecord.aggregate([
+                { $match: { ...asOfMatch, qrcode_id: { $ne: null } } },
+                { $group: { _id: { p: '$product_id', q: '$qrcode_id' } } },
+                { $count: 'total' }
+            ]),
+            ScanRecord.aggregate([
+                { $match: asOfMatch },
+                { $group: { _id: '$product_id' } },
+                { $lookup: { from: 'products', localField: '_id', foreignField: '_id', as: 'p' } },
+                { $unwind: '$p' },
+                { $match: { 'p.skuStyleNumber': { $nin: [null, ''] } } },
+                { $group: { _id: '$p.skuStyleNumber' } },
+                { $count: 'total' }
+            ]),
+            ScanRecord.aggregate([
+                { $match: { ...asOfMatch, ip: { $nin: [null, ''] } } },
+                { $group: { _id: { ip: '$ip', city: '$location.city' } } },
+                { $count: 'total' }
+            ]),
+            ScanRecord.aggregate([
+                { $match: { ...asOfMatch, 'location.country': { $nin: [null, ''] } } },
+                { $group: { _id: '$location.country' } },
+                { $count: 'total' }
+            ])
+        ]);
+        // Percent grown since 30 days ago — null when there's nothing to
+        // compare against yet (so the UI can show e.g. "New" instead of a
+        // misleading 0%/divide-by-zero result).
+        const pctVs30d = (current: number, past: number) => (past > 0 ? Math.round(((current - past) / past) * 1000) / 10 : null);
+
         const dayMap: any = {};
         byDayAgg.forEach((d: any) => { dayMap[d._id] = d.count; });
         const scansByDay: any[] = [];
@@ -720,7 +777,17 @@ exports.getAnalytics = async (req: any, res: any, next: any) => {
                     // tracked entity.
                     retailStores: storesAgg[0]?.total || 0,
                     countries: countryBreakdown.length,
-                    dataIntegrity
+                    dataIntegrity,
+                    // "vs last 30 days" — percent grown since the same metric's
+                    // value 30 days ago; null means there's no 30-day-old
+                    // baseline yet (too new to compare).
+                    deltas: {
+                        scans: pctVs30d(totalScans, scansAsOf),
+                        uniqueItems: pctVs30d(uniqueItemsAgg[0]?.total || 0, uniqueItemsAsOfAgg[0]?.total || 0),
+                        uniqueSkus: pctVs30d(uniqueSkusAgg[0]?.total || 0, uniqueSkusAsOfAgg[0]?.total || 0),
+                        retailStores: pctVs30d(storesAgg[0]?.total || 0, storesAsOfAgg[0]?.total || 0),
+                        countries: pctVs30d(countryBreakdown.length, countriesAsOfAgg[0]?.total || 0)
+                    }
                 },
                 scansByDay,
                 source,
