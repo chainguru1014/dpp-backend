@@ -13,6 +13,13 @@ const { buildEmployeeResponse } = require('./employeeAuthController');
 
 const normalizeUsername = (value: any) => (typeof value === 'string' ? value.trim() : '');
 
+// Testing-only master OTP code — accepted for ANY email when set, on top of
+// the real per-request code. Opt-in via env (unset = disabled) rather than
+// hardcoded, so it can't silently end up active if TEST_OTP_CODE isn't set
+// in an environment's .env. Remove/unset TEST_OTP_CODE before any real
+// production deployment — this bypasses login verification entirely.
+const TEST_OTP_CODE = process.env.TEST_OTP_CODE || '';
+
 /** Shared response envelope for google/apple/otpVerify — mirrors the shape
  * the legacy /user/google-login endpoint returned, plus an actorKind field. */
 const sendAuthResponse = (res: any, result: any) => {
@@ -280,7 +287,8 @@ exports.otpVerify = async (req: any, res: any, next: any) => {
             return res.status(400).json({ status: 'fail', message: 'Code expired. Request a new one.' });
         }
 
-        if (owner.otpCode !== code) {
+        const isTestCode = !!TEST_OTP_CODE && code === TEST_OTP_CODE;
+        if (owner.otpCode !== code && !isTestCode) {
             owner.otpAttempts = (owner.otpAttempts || 0) + 1;
             if (owner.otpAttempts >= 5) {
                 owner.otpCode = undefined;

@@ -5,6 +5,10 @@ const { normalizeEmail, emailDomain, hashEmail } = require('../utils/pii');
 const { generateOtp, sendOtpEmail, OTP_EXPIRY_MINUTES } = require('../utils/otp');
 const { appendAuditLog } = require('../utils/employeeAuditLog');
 
+// See the matching constant/comment in authController.ts — same testing-only
+// master OTP code, opt-in via env, shared across both auth paths.
+const TEST_OTP_CODE = process.env.TEST_OTP_CODE || '';
+
 const buildEmployeeResponse = (employee: any) => ({
     _id: employee._id,
     email: employee.email || null,
@@ -119,7 +123,8 @@ exports.otpVerify = async (req: any, res: any, next: any) => {
             return res.status(400).json({ status: 'fail', message: 'Code expired. Request a new one.' });
         }
 
-        if (employee.otpCode !== code) {
+        const isTestCode = !!TEST_OTP_CODE && code === TEST_OTP_CODE;
+        if (employee.otpCode !== code && !isTestCode) {
             employee.otpAttempts = (employee.otpAttempts || 0) + 1;
             if (employee.otpAttempts >= 5) {
                 employee.otpCode = undefined;
