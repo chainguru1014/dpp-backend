@@ -3,6 +3,7 @@ const router = express.Router();
 const ProductIdentifierController = require('../controllers/productIdentifierController');
 
 router.post('/', ProductIdentifierController.register);
+router.post('/bulk', ProductIdentifierController.bulkRegister);
 router.get('/', ProductIdentifierController.listForProduct);
 router.post('/:productId/print', ProductIdentifierController.printIdentifiers);
 router.delete('/:id', ProductIdentifierController.remove);

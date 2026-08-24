@@ -5,6 +5,12 @@ const AppError = require('../utils/appError');
 const { getNextSequence } = require('../models/counterModel');
 const { deriveEntityCode } = require('../utils/idFormat');
 
+// Matches CaptureRecord.identifierType's enum — 'securityQr' isn't included
+// since it's never actually distinguishable from 'qr' at capture time (both
+// are QR-shaped codes resolved the same way; see the app's
+// verifyScannedCode), it's only a labeling distinction in the print dialog.
+const ALLOWED_IDENTIFIER_TYPES = ['qr', 'barcode', 'nfc', 'rfid', 'gs1dl'];
+
 // YYYYMMDD in UTC — matches the day boundary the daily ref-number sequence
 // resets on.
 const dateKeyFor = (date: Date): string => {
@@ -44,7 +50,7 @@ exports.create = async (req: any, res: any, next: any) => {
             return next(new AppError(400, 'fail', 'rawValue is required'), req, res, next);
         }
 
-        const identifierType = req.body?.identifierType === 'barcode' ? 'barcode' : 'qr';
+        const identifierType = ALLOWED_IDENTIFIER_TYPES.includes(req.body?.identifierType) ? req.body.identifierType : 'qr';
         const step = steps[stepIndex];
         const dateKey = dateKeyFor(new Date());
         const refCode = deriveEntityCode(step.entity);

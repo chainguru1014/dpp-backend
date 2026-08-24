@@ -57,6 +57,68 @@ exports.register = async (req: any, res: any, next: any) => {
     }
 };
 
+// Bulk-registers many identifiers of one type against a product in one call
+// — used by the frontend's CSV import (e.g. RFID tags a hardware vendor
+// pre-generates and hands over as a CSV). Loops the same create+resolvePmc
+// logic register() uses per row. A duplicate raw_value (already registered,
+// to this or another product) is skipped rather than failing the whole
+// batch, since a re-imported CSV or one with accidental repeats shouldn't
+// block the rows that are new.
+exports.bulkRegister = async (req: any, res: any, next: any) => {
+    try {
+        const { product_id, company_id, source_type, rows } = req.body || {};
+
+        if (!product_id || !company_id) {
+            return next(new AppError(400, 'fail', 'product_id and company_id are required'));
+        }
+        if (!SOURCE_TYPES.includes(source_type)) {
+            return next(new AppError(400, 'fail', `source_type must be one of: ${SOURCE_TYPES.join(', ')}`));
+        }
+        if (!Array.isArray(rows) || rows.length === 0) {
+            return next(new AppError(400, 'fail', 'rows must be a non-empty array'));
+        }
+
+        let inserted = 0;
+        let skipped = 0;
+        const errors: any[] = [];
+
+        for (const row of rows) {
+            const normalizedRawValue = String(row?.raw_value || '').trim();
+            if (!normalizedRawValue) {
+                skipped++;
+                continue;
+            }
+            try {
+                const gs1 = parseGs1(normalizedRawValue);
+                await ProductIdentifier.create({
+                    product_id,
+                    company_id,
+                    source_type,
+                    raw_value: normalizedRawValue,
+                    gtin: gs1?.gtin || '',
+                    note: row?.note || ''
+                });
+                try {
+                    await resolvePmc({ product_id, company_id, source_type, raw_value: normalizedRawValue, gs1 });
+                } catch (pmcError) {
+                    console.error('PMC resolution failed for bulk identifier registration:', pmcError);
+                }
+                inserted++;
+            } catch (error: any) {
+                if (error?.code === 11000) {
+                    skipped++;
+                } else {
+                    errors.push({ raw_value: normalizedRawValue, message: error?.message || 'Unknown error' });
+                }
+            }
+        }
+
+        res.status(200).json({ status: 'success', data: { inserted, skipped, errors } });
+    } catch (error) {
+        next(error);
+    }
+};
+
 exports.listForProduct = async (req: any, res: any, next: any) => {
     try {
         const { product_id } = req.query || {};

@@ -52,7 +52,7 @@ const captureRecordSchema = new mongoose.Schema({
     },
     identifierType: {
         type: String,
-        enum: ['qr', 'barcode'],
+        enum: ['qr', 'barcode', 'nfc', 'rfid', 'gs1dl'],
         default: 'qr'
     },
     imagePath: {
