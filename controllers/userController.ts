@@ -427,18 +427,25 @@ exports.updateProfile = async (req: any, res: any, next: any) => {
         }
 
         if (userType === 'client') {
-            const { name, password, gender, age, country } = req.body;
-            if (!name || !password || !gender || !age || !country) {
+            // GDPR data minimization: consumers edit only nickname / gender /
+            // birthYear / country (+ optional avatar). `name` (the email-prefix
+            // default) and password are never collected here.
+            const { nickname, gender, birthYear, country, avatar } = req.body;
+            const birthYearStr = birthYear != null ? String(birthYear) : '';
+            if (!nickname || !gender || !country || !/^\d{4}$/.test(birthYearStr)) {
                 return res.status(400).json({
                     status: 'fail',
-                    message: 'Client requires username, password, gender, age, and country'
+                    message: 'Client requires nickname, gender, birthYear (4-digit year), and country'
                 });
             }
-            updateData.name = name;
-            updateData.password = password;
+            updateData.nickname = String(nickname).trim();
             updateData.gender = gender;
-            updateData.age = age;
+            updateData.birthYear = Number(birthYearStr);
             updateData.country = country;
+            if (typeof avatar === 'string' && avatar.trim()) {
+                updateData.avatar = avatar.trim();
+            }
+            updateData.age = undefined;
             updateData.firstName = undefined;
             updateData.lastName = undefined;
             updateData.address = undefined;
