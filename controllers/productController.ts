@@ -115,6 +115,36 @@ exports.getProductsByUser = async (req: any, res: any, next: any) => {
     }
 };
 
+/**
+ * GET /product/by-brand?website=&limit=
+ * Public list of products belonging to one brand (matched on
+ * brandInfo.websiteUrl, case-insensitively). Powers the Brand Detail page's
+ * "Featured Products" list + "View all".
+ */
+exports.getProductsByBrand = async (req: any, res: any, next: any) => {
+    try {
+        const rawWebsite = String(req.query?.website || '').trim();
+        if (!rawWebsite) {
+            return res.status(400).json({ status: 'fail', message: 'website is required' });
+        }
+        const limit = Math.min(100, Math.max(0, parseInt(req.query?.limit) || 0));
+        // Normalize to the same shape FollowedBrand stores (lowercase, protocol-prefixed)
+        // but match loosely so http/https/trailing-slash differences still hit.
+        const host = rawWebsite.toLowerCase().replace(/^https?:\/\//, '').replace(/\/+$/, '');
+        const escaped = host.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const filter: any = {
+            is_deleted: { $ne: true },
+            'brandInfo.websiteUrl': { $regex: escaped, $options: 'i' },
+        };
+        let query = Product.find(filter).sort({ _id: -1 }).lean();
+        if (limit) query = query.limit(limit);
+        const docs = await query;
+        return res.status(200).json({ status: 'success', results: docs.length, data: docs });
+    } catch (error) {
+        next(error);
+    }
+};
+
 exports.getProduct = base.getOne(Product);
 
 // Don't update password on this 

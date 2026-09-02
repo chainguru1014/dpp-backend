@@ -119,6 +119,50 @@ exports.listFollowedBrands = async (req: any, res: any, next: any) => {
     }
 };
 
+/**
+ * GET /engagement/brand/stats?website=
+ * Aggregate follower stats for one brand (matched by website URL):
+ *  - followerCount: how many users follow this brand
+ *  - countryCount:  how many distinct countries those users are in
+ * Powers the Brand Detail page's "Customers" / "Countries" tiles.
+ */
+exports.getBrandStats = async (req: any, res: any, next: any) => {
+    try {
+        const mongoose = require('mongoose');
+        const website = normalizeWebsite(req.query?.website || req.query?.brandWebsiteUrl);
+        if (!website) {
+            return res.status(400).json({ status: 'fail', message: 'website is required' });
+        }
+        const User = require('../models/userModel');
+        const rows = await runWithDbRetry(() =>
+            FollowedBrand.aggregate([
+                { $match: { brandWebsiteUrl: website } },
+                { $lookup: { from: 'users', localField: 'user_id', foreignField: '_id', as: 'user' } },
+                { $unwind: { path: '$user', preserveNullAndEmptyArrays: true } },
+                {
+                    $group: {
+                        _id: null,
+                        followerCount: { $sum: 1 },
+                        countries: { $addToSet: '$user.country' },
+                    },
+                },
+            ])
+        );
+        void User;
+        const agg = rows && rows[0];
+        const followerCount = agg?.followerCount || 0;
+        const countryCount = Array.isArray(agg?.countries)
+            ? agg.countries.filter((c: any) => typeof c === 'string' && c.trim()).length
+            : 0;
+        return res.status(200).json({ status: 'success', followerCount, countryCount });
+    } catch (error) {
+        if (isPoolDestroyedError(error)) {
+            return res.status(503).json({ status: 'error', message: 'Database connection is temporarily unavailable. Please try again.' });
+        }
+        next(error);
+    }
+};
+
 exports.getAlbumStatus = async (req: any, res: any, next: any) => {
     try {
         const mongoose = require('mongoose');

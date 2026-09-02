@@ -819,6 +819,37 @@ exports.getAnalytics = async (req: any, res: any, next: any) => {
     }
 };
 
+/**
+ * GET /qrcode/scan/history/mine?user_id=&product_id=
+ * One user's own scan/visit timeline for a single product — powers the
+ * consumer Product History page (screenshot #11). Newest first.
+ */
+exports.getMyProductScanHistory = async (req: any, res: any, next: any) => {
+    try {
+        const { user_id, product_id } = req.query || {};
+        if (!user_id || !mongoose.Types.ObjectId.isValid(String(user_id))
+            || !product_id || !mongoose.Types.ObjectId.isValid(String(product_id))) {
+            return res.status(400).json({ status: 'fail', message: 'user_id and product_id are required' });
+        }
+        const rows = await ScanRecord.find({
+            user_id: new mongoose.Types.ObjectId(String(user_id)),
+            product_id: new mongoose.Types.ObjectId(String(product_id)),
+        })
+            .sort({ scanned_at: -1 })
+            .limit(200)
+            .lean();
+        const data = rows.map((r: any) => ({
+            _id: r._id,
+            source: r.source === 'visit' ? 'visit' : 'scan',
+            scanned_at: r.scanned_at,
+            location: r.location || null,
+        }));
+        return res.status(200).json({ status: 'success', data });
+    } catch (error) {
+        next(error);
+    }
+};
+
 exports.getScannedProducts = async (req: any, res: any, next: any) => {
     try {
         const { user_id } = req.query || {};
