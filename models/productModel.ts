@@ -71,7 +71,21 @@ const productSchema = new mongoose.Schema({
             type: String,
             required: true,
             trim: true
+        },
+        // Optional wide banner shown on the Brand Detail page (app).
+        coverUrl: {
+            type: String,
+            default: ''
         }
+    },
+    // Certification badge names shown on the Lifecycle > Materials tab.
+    certifications: [{ type: String }],
+    // Headline sustainability figures shown on the Lifecycle > Dispose tab
+    // (free-text so brands can include units, e.g. "12.4 kg", "320 L").
+    sustainabilityImpact: {
+        co2Avoided: { type: String, default: '' },
+        waterSaved: { type: String, default: '' },
+        energySaved: { type: String, default: '' }
     },
     images: {
         type: Array,
@@ -187,12 +201,16 @@ const productSchema = new mongoose.Schema({
         size: { type: String, default: '' },
         materials: [{
             material: { type: String },
-            percent: { type: Number }
+            percent: { type: Number },
+            // Optional country of origin for this material (Lifecycle > Materials).
+            origin: { type: String, default: '' }
         }]
     },
     maintenance: {
         iconIds: { type: Array, default: [] },
-        description: { type: String, default: '' }
+        description: { type: String, default: '' },
+        // Optional bullet-point care tips (Lifecycle > Care).
+        tips: [{ type: String }]
     },
     disposal: {
         repairUrl: { type: String, default: '' },
@@ -202,14 +220,24 @@ const productSchema = new mongoose.Schema({
     },
     traceabilityEsg: {
         madeIn: { type: String, default: '' },
+        // Explicit country of origin (Lifecycle > Traceability); falls back to madeIn.
+        originCountry: { type: String, default: '' },
         materialOrigins: [{
             material: { type: String },
-            companyName: { type: String }
+            companyName: { type: String },
+            country: { type: String, default: '' }
         }],
         shippingLog: { type: String, default: '' },
         distance: { type: String, default: '' },
         co2Production: { type: String, default: '' },
-        co2Transportation: { type: String, default: '' }
+        co2Transportation: { type: String, default: '' },
+        // Shipping route detail (Lifecycle > Traceability / Journey > Transportation).
+        route: {
+            origin: { type: String, default: '' },
+            destination: { type: String, default: '' },
+            mode: { type: String, default: '' },
+            emissions: { type: String, default: '' }
+        }
     }
 });
 

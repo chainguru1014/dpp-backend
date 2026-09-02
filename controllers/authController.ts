@@ -10,6 +10,29 @@ const { emailDomain, hashEmail } = require('../utils/pii');
 const { generateOtp, sendOtpEmail, OTP_EXPIRY_MINUTES } = require('../utils/otp');
 const { appendAuditLog } = require('../utils/employeeAuditLog');
 const { buildEmployeeResponse } = require('./employeeAuthController');
+const { createNotification } = require('./notificationController');
+
+/**
+ * Fire-and-forget "New sign-in" notification for a User actor. Best-effort —
+ * never blocks the auth response.
+ */
+const notifyLoginAlert = (actor: any, req: any) => {
+    try {
+        if (!actor?._id) return;
+        const ua = String(req?.headers?.['user-agent'] || '').slice(0, 120);
+        createNotification({
+            audience: 'user',
+            recipient: { kind: 'User', id: actor._id, email: actor.email, name: actor.name },
+            type: 'login_alert',
+            level: 'warning',
+            title: 'Security Alert',
+            message: ua ? `New sign-in detected on ${ua}` : 'A new sign-in to your account was detected.',
+            data: { at: new Date().toISOString() }
+        });
+    } catch (err) {
+        console.error('notifyLoginAlert failed:', err);
+    }
+};
 
 const normalizeUsername = (value: any) => (typeof value === 'string' ? value.trim() : '');
 
@@ -22,9 +45,15 @@ const TEST_OTP_CODE = process.env.TEST_OTP_CODE || '';
 
 /** Shared response envelope for google/apple/otpVerify — mirrors the shape
  * the legacy /user/google-login endpoint returned, plus an actorKind field. */
-const sendAuthResponse = (res: any, result: any) => {
+const sendAuthResponse = (res: any, result: any, req?: any) => {
     const { actorKind, actor, token } = result;
     const data = actorKind === 'Company' ? buildCompanyResponse(actor) : buildUserResponse(actor);
+    // "New sign-in" alert — consumer (User) accounts only, and only once the
+    // profile is complete (a first-ever signup still needs onboarding, not a
+    // security alert).
+    if (actorKind === 'User' && actor.profileCompleted !== false) {
+        notifyLoginAlert(actor, req);
+    }
     // Strict `=== false` (not a falsy check): existing companies created
     // before this field existed have it entirely unset, and must be treated
     // as complete, not silently forced through profile completion again.
@@ -86,7 +115,7 @@ exports.google = async (req: any, res: any, next: any) => {
             }
         });
 
-        return sendAuthResponse(res, result);
+        return sendAuthResponse(res, result, req);
     } catch (error) {
         next(error);
     }
@@ -140,7 +169,7 @@ exports.apple = async (req: any, res: any, next: any) => {
             }
         });
 
-        return sendAuthResponse(res, result);
+        return sendAuthResponse(res, result, req);
     } catch (error) {
         next(error);
     }
@@ -331,7 +360,7 @@ exports.otpVerify = async (req: any, res: any, next: any) => {
         await owner.save();
 
         const result = await findOrLinkOrCreateByEmail({ email, provider: 'otp' });
-        return sendAuthResponse(res, result);
+        return sendAuthResponse(res, result, req);
     } catch (error) {
         next(error);
     }

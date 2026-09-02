@@ -9,6 +9,48 @@ const base = require('./baseController');
 const APIFeatures = require('../utils/apiFeatures');
 const { buildPublicProductUrl } = require('../utils/publicUrl');
 const { resolvePmc } = require('../services/pmcService');
+const ScanRecord = require('../models/scanRecordModel');
+const ProductHolding = require('../models/productHoldingModel');
+const { createNotification } = require('./notificationController');
+
+/**
+ * Fire-and-forget "Lifecycle updated" notification to every app user who has
+ * scanned or currently holds this product. Best-effort — never blocks the
+ * update response, never throws.
+ */
+const notifyLifecycleUpdated = async (product: any) => {
+    try {
+        const productId = product?._id;
+        if (!productId) return;
+        const productName = product?.name || 'a product you follow';
+        const [scanUserIds, holdingOwnerIds] = await Promise.all([
+            ScanRecord.distinct('user_id', { product_id: productId }),
+            ProductHolding.distinct('owner.id', { product_id: productId, 'owner.kind': 'User', quantity: { $gt: 0 } })
+        ]);
+        const seen = new Set<string>();
+        const ids: any[] = [];
+        [...scanUserIds, ...holdingOwnerIds].forEach((id: any) => {
+            if (!id) return;
+            const key = String(id);
+            if (seen.has(key)) return;
+            seen.add(key);
+            ids.push(id);
+        });
+        for (const id of ids.slice(0, 200)) {
+            await createNotification({
+                audience: 'user',
+                recipient: { kind: 'User', id },
+                type: 'lifecycle_updated',
+                level: 'info',
+                title: 'Lifecycle Update',
+                message: `The product passport for "${productName}" has been updated.`,
+                data: { productId: String(productId), productName }
+            });
+        }
+    } catch (err) {
+        console.error('notifyLifecycleUpdated failed:', err);
+    }
+};
 
 const divcount = 20000;
 const mintcount = 15000;
@@ -171,6 +213,9 @@ exports.updateProduct = async(req: any, res: any, next: any) => {
         if (!doc) {
             return next(new AppError(404, 'fail', 'No document found with that id'), req, res, next);
         }
+
+        // Notify users who scanned / hold this product that its passport changed.
+        notifyLifecycleUpdated(doc);
 
         res.status(200).json({
             status: 'success',

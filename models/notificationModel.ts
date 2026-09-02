@@ -28,7 +28,11 @@ const notificationSchema = new mongoose.Schema({
     },
     type: {
         type: String,
-        enum: ['transfer_request', 'transfer_confirmed', 'transfer_rejected', 'transfer_received', 'system'],
+        enum: [
+            'transfer_request', 'transfer_confirmed', 'transfer_rejected', 'transfer_received',
+            'product_authenticated', 'lifecycle_updated', 'login_alert',
+            'system'
+        ],
         default: 'system'
     },
     // Visual severity, mainly for system notifications.

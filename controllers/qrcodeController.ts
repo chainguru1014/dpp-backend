@@ -7,6 +7,7 @@ const ScanRecord = require('../models/scanRecordModel');
 const User = require('../models/userModel');
 const ProductReaction = require('../models/productReactionModel');
 const PMC = require('../models/pmcModel');
+const { createNotification } = require('./notificationController');
 const base = require('./baseController');
 const APIFeatures = require('../utils/apiFeatures');
 const { encrypt, decrypt } = require('../utils/helper');
@@ -1322,6 +1323,25 @@ exports.resolveProductByQrUrl = async (req: any, res: any, next: any) => {
             isSecurityCheckPassed = !!expectedParsed
                 && String(expectedParsed.productId) === String(parsed.productId)
                 && Number(expectedParsed.qrcodeId) === Number(parsed.qrcodeId);
+        }
+
+        // A security-check scan (expectedQrUrl set) that passes for a signed-in
+        // user raises a "Product authenticated" notification for that user.
+        const authUserIdRaw = req.body?.user_id;
+        const authUserId = authUserIdRaw && mongoose.Types.ObjectId.isValid(String(authUserIdRaw))
+            ? new mongoose.Types.ObjectId(String(authUserIdRaw))
+            : null;
+        if (expectedQrUrl && isSecurityCheckPassed && authUserId) {
+            const productName = (payload as any)?.name || 'your product';
+            createNotification({
+                audience: 'user',
+                recipient: { kind: 'User', id: authUserId },
+                type: 'product_authenticated',
+                level: 'success',
+                title: 'Product Authenticated',
+                message: `Your ${productName} was successfully authenticated.`,
+                data: { productId: String(parsed.productId), qrcodeId: String(parsed.qrcodeId), productName }
+            });
         }
 
         return res.status(200).json({
