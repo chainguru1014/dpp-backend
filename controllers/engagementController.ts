@@ -110,6 +110,27 @@ exports.listFollowedBrands = async (req: any, res: any, next: any) => {
         const docs = await runWithDbRetry(() =>
             FollowedBrand.find({ user_id: userId }).sort({ updatedAt: -1 }).lean()
         );
+
+        // Backfill the brand logo / cover from a live product for any follow row
+        // that was saved without one (older records, or a follow from a screen
+        // that didn't have the brand assets to hand).
+        const Product = require('../models/productModel');
+        await Promise.all(docs.map(async (d: any) => {
+            if (d.brandLogoUrl && d.brandCoverUrl) return;
+            const host = String(d.brandWebsiteUrl || '').toLowerCase().replace(/^https?:\/\//, '').replace(/\/+$/, '');
+            if (!host) return;
+            const escaped = host.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const p = await Product.findOne(
+                { is_deleted: { $ne: true }, 'brandInfo.websiteUrl': { $regex: escaped, $options: 'i' } },
+                { brandInfo: 1 }
+            ).lean();
+            if (p?.brandInfo) {
+                if (!d.brandLogoUrl) d.brandLogoUrl = p.brandInfo.logoUrl || '';
+                d.brandCoverUrl = p.brandInfo.coverUrl || '';
+                if (!d.brandDetail) d.brandDetail = p.brandInfo.detail || '';
+            }
+        }));
+
         return res.status(200).json({ status: 'success', data: docs });
     } catch (error) {
         if (isPoolDestroyedError(error)) {

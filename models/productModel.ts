@@ -25,9 +25,20 @@ const productSchema = new mongoose.Schema({
     model: {
         type: String,
     },
+    // @deprecated Free-text description — no longer shown in the consumer app
+    // (Key Highlights uses detailFacts + the structured fields below instead).
     detail: {
         type: String,
     },
+    // Consumer product-facts (Overview / Lifecycle > Details / Product Summary).
+    productType: { type: String, default: '' },
+    color: { type: String, default: '' },
+    size: { type: String, default: '' },
+    manufactureDate: { type: String, default: '' },
+    // Warranty (Product Summary): status label + how many years it stays valid
+    // from the date the product was registered.
+    warrantyStatus: { type: String, default: '' },
+    warrantyValidYears: { type: Number, default: 0 },
     // Structured product-detail facts shown as icon rows on the product card
     // (Material / Fit / Wash / Durability / Traceable product identity) —
     // additive alongside the free-text `detail` field above, not a replacement.
@@ -239,7 +250,7 @@ const productSchema = new mongoose.Schema({
             emissions: { type: String, default: '' }
         }
     }
-});
+}, { timestamps: true });
 
 const Product = mongoose.model("Product", productSchema);
 module.exports = Product;
