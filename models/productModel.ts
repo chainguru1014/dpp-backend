@@ -89,14 +89,16 @@ const productSchema = new mongoose.Schema({
             default: ''
         }
     },
-    // Certification badge names shown on the Lifecycle > Materials tab.
-    certifications: [{ type: String }],
-    // Headline sustainability figures shown on the Lifecycle > Dispose tab
-    // (free-text so brands can include units, e.g. "12.4 kg", "320 L").
+    // Certifications shown on the Lifecycle > Materials tab. Mixed so it accepts
+    // either the legacy array of names (strings) or {icon,title,content} objects.
+    certifications: [{ type: mongoose.Schema.Types.Mixed }],
+    // Sustainability-impact for the Lifecycle > Dispose tab. Legacy string
+    // fields are still read; `items` is the new {icon,value,label,description} list.
     sustainabilityImpact: {
         co2Avoided: { type: String, default: '' },
         waterSaved: { type: String, default: '' },
-        energySaved: { type: String, default: '' }
+        energySaved: { type: String, default: '' },
+        items: [{ type: mongoose.Schema.Types.Mixed }]
     },
     images: {
         type: Array,
@@ -213,8 +215,9 @@ const productSchema = new mongoose.Schema({
         materials: [{
             material: { type: String },
             percent: { type: Number },
-            // Optional country of origin for this material (Lifecycle > Materials).
-            origin: { type: String, default: '' }
+            // Optional country of origin + uploaded icon (Lifecycle > Materials).
+            origin: { type: String, default: '' },
+            icon: { type: String, default: '' }
         }]
     },
     maintenance: {
@@ -236,7 +239,8 @@ const productSchema = new mongoose.Schema({
         materialOrigins: [{
             material: { type: String },
             companyName: { type: String },
-            country: { type: String, default: '' }
+            country: { type: String, default: '' },
+            icon: { type: String, default: '' }
         }],
         shippingLog: { type: String, default: '' },
         distance: { type: String, default: '' },
