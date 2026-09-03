@@ -870,7 +870,17 @@ exports.getScannedProducts = async (req: any, res: any, next: any) => {
             {
                 $group: {
                     _id: '$encrypt_data',
-                    latest: { $first: '$$ROOT' }
+                    latest: { $first: '$$ROOT' },
+                    // Track every source seen for this code so the consumer
+                    // History screen can tell "ever scanned" from "ever visited"
+                    // (the latest record alone is misleading — opening the
+                    // product page records a 'visit' right after a 'scan').
+                    sources: { $addToSet: '$source' },
+                    firstScanAt: {
+                        $min: {
+                            $cond: [{ $ne: ['$source', 'visit'] }, '$scanned_at', null]
+                        }
+                    }
                 }
             },
             {
@@ -888,12 +898,19 @@ exports.getScannedProducts = async (req: any, res: any, next: any) => {
         const records = await ScanRecord.aggregate(pipeline);
         const data = records.map((record: any) => {
             const normalizedProduct = normalizeProductMedia(record.product || {});
+            const sources: string[] = Array.isArray(record.sources) ? record.sources : [];
+            const everScanned = sources.some((s) => s !== 'visit');
+            const everVisited = sources.includes('visit');
             return {
                 ...normalizedProduct,
                 token_id: record.latest?.qrcode_id,
                 pmc_code: record.latest?.pmc_code || null,
                 scannedAt: new Date(record.latest?.scanned_at || Date.now()).getTime(),
+                firstScannedAt: record.firstScanAt ? new Date(record.firstScanAt).getTime() : null,
                 scannedQRCode: record.latest?.encrypt_data || '',
+                everScanned,
+                everVisited,
+                // Kept for backward compatibility with older clients.
                 visitSource: record.latest?.source === 'visit' ? 'visit' : 'scan'
             };
         });
