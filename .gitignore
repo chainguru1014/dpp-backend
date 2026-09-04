@@ -110,3 +110,4 @@ db
 uploads/
 
 # web3/.local-dev.log
+.dev.log
