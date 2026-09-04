@@ -30,6 +30,8 @@ const productSchema = new mongoose.Schema({
     detail: {
         type: String,
     },
+    // Long-form description shown in Lifecycle > Details > "About This Product".
+    aboutProduct: { type: String, default: '' },
     // Consumer product-facts (Overview / Lifecycle > Details / Product Summary).
     productType: { type: String, default: '' },
     color: { type: String, default: '' },
