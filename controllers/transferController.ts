@@ -29,9 +29,16 @@ const toObjectIdIfValid = (value: any) => {
     return mongoose.Types.ObjectId.isValid(str) ? new mongoose.Types.ObjectId(str) : null;
 };
 
+const DEFAULT_WEB_APP_URL = 'https://dpp.innosynch.com';
+
 const webBaseUrl = () => {
-    const base = process.env.PUBLIC_WEB_APP_URL || 'https://dpp.innosynch.com';
-    return base.replace(/\/+$/, '');
+    const configured = String(process.env.PUBLIC_WEB_APP_URL || '').trim().replace(/\/+$/, '');
+    // Ignore a stale raw-IP / localhost value from the server env — shared transfer
+    // links must point at the public hosting domain, not an internal address.
+    if (!configured || /^https?:\/\/(\d{1,3}\.){3}\d{1,3}(:\d+)?/i.test(configured) || /localhost|127\.0\.0\.1/i.test(configured)) {
+        return DEFAULT_WEB_APP_URL;
+    }
+    return configured;
 };
 
 const buildProductSnapshot = (product: any) => {
