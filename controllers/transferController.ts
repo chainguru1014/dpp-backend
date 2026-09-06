@@ -93,10 +93,15 @@ exports.initiate = async (req: any, res: any, next: any) => {
         await ensureSeedHolding(product);
         // Ownership is per-unit: a buyer who already holds some items can buy more,
         // as long as another owner (brand/company or a different holder) still has
-        // units to sell. The seller is the largest holder that isn't the buyer.
-        const owner = await getPrimaryOwnerExcluding(product, { kind: 'User', id: buyerObjId });
+        // units to sell. When the ledger has no other holder (e.g. a product that
+        // was never minted, or one the buyer already holds in full), fall back to
+        // the brand company that created it — "Contact Owner" then reaches the brand.
+        let owner = await getPrimaryOwnerExcluding(product, { kind: 'User', id: buyerObjId });
+        if (!owner && product.company_id) {
+            owner = { kind: 'Company', id: product.company_id, email: '', name: '' };
+        }
         if (!owner) {
-            return res.status(409).json({ status: 'fail', message: 'No items available to purchase for this product' });
+            return res.status(409).json({ status: 'fail', message: 'No owner is registered for this product yet' });
         }
 
         // Resolve a display-friendly owner identity (name + email) for the buyer,
