@@ -8,8 +8,10 @@ const { protect, restrictTo } = require('../middleware/authMiddleware');
 // super-admin only (checked in the controller).
 router.get('/consumer-location-steps', PlatformSettingsController.getConsumerLocationSteps);
 router.put('/consumer-location-steps', protect, restrictTo('Company'), PlatformSettingsController.updateConsumerLocationSteps);
-// Product item categories — GET public, PUT super-admin only (checked in the controller).
+// Product item categories — GET public; POST (add one) for anyone who can edit
+// products; PUT (rename/reorder/remove) super-admin only. Checked in the controller.
 router.get('/item-categories', PlatformSettingsController.getItemCategories);
+router.post('/item-categories', protect, restrictTo('Company', 'Employee'), PlatformSettingsController.addItemCategory);
 router.put('/item-categories', protect, restrictTo('Company'), PlatformSettingsController.updateItemCategories);
 
 module.exports = router;

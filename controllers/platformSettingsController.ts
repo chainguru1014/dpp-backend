@@ -182,3 +182,56 @@ exports.updateItemCategories = async (req: any, res: any, next: any) => {
         next(error);
     }
 };
+
+// POST /platform-settings/item-categories — ADD one category (appended to the
+// end). Open to anyone who can edit products — a company account, a
+// Supervisor, or the super admin — so a new category can be created from the
+// product form. Renaming, reordering and removing stay super-admin only (PUT
+// above), since the list is shared by every company.
+const Employee = require('../models/employeeModel');
+exports.addItemCategory = async (req: any, res: any, next: any) => {
+    try {
+        let allowed = false;
+        if (req.user.actorKind === 'Company') {
+            allowed = !!(await Company.findById(req.user.id).select('_id'));
+        } else if (req.user.actorKind === 'Employee') {
+            const employee = await Employee.findById(req.user.id).select('employeeType isActive');
+            allowed = !!employee && employee.isActive && employee.employeeType === 'supervisor';
+        }
+        if (!allowed) {
+            return next(new AppError(403, 'fail', 'You do not have permission to add categories'), req, res, next);
+        }
+
+        const label = String(req.body?.label || '').trim();
+        if (!label) {
+            return next(new AppError(400, 'fail', 'Category name is required'), req, res, next);
+        }
+        const existing = await getItemCategories();
+        if (existing.length >= MAX_CATEGORIES) {
+            return next(new AppError(400, 'fail', `At most ${MAX_CATEGORIES} categories`), req, res, next);
+        }
+        const same = existing.find((c: any) => c.label.toLowerCase() === label.toLowerCase());
+        if (same) {
+            // Already there — hand it back so the form can just select it.
+            return res.status(200).json({ status: 'success', data: { category: same, itemCategories: existing, created: false } });
+        }
+
+        const keys = new Set(existing.map((c: any) => c.key));
+        const base = slugify(label) || 'category';
+        let key = base;
+        for (let n = 2; keys.has(key); n++) key = `${base}-${n}`;
+        const skuPrefix = String(req.body?.skuPrefix || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6)
+            || defaultSkuPrefix(label);
+        const category = { key, label, skuPrefix };
+        const itemCategories = [...existing, category];
+
+        await PlatformSettings.findOneAndUpdate(
+            { key: ITEM_CATEGORIES_KEY },
+            { itemCategories },
+            { upsert: true, new: true }
+        );
+        res.status(201).json({ status: 'success', data: { category, itemCategories, created: true } });
+    } catch (error) {
+        next(error);
+    }
+};
