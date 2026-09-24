@@ -71,3 +71,114 @@ exports.updateConsumerLocationSteps = async (req: any, res: any, next: any) => {
         next(error);
     }
 };
+
+// ----- Product item categories (super-admin managed) -----
+const Product = require('../models/productModel');
+const {
+    ITEM_CATEGORIES_KEY,
+    FALLBACK_CATEGORY_KEY,
+    getItemCategories,
+    slugify,
+    defaultSkuPrefix,
+} = require('../utils/itemCategories');
+
+const MAX_CATEGORIES = 30;
+
+// GET /platform-settings/item-categories — public (the product form, the
+// dashboard and the app all need the labels). Each entry also carries how
+// many products use it, so the manage dialog can warn before a removal.
+exports.getItemCategories = async (req: any, res: any, next: any) => {
+    try {
+        const categories = await getItemCategories();
+        const counts = await Product.aggregate([
+            { $match: { is_deleted: { $ne: true } } },
+            { $group: { _id: '$itemCategory', n: { $sum: 1 } } }
+        ]);
+        const countMap: any = {};
+        counts.forEach((c: any) => { countMap[c._id || FALLBACK_CATEGORY_KEY] = (countMap[c._id || FALLBACK_CATEGORY_KEY] || 0) + c.n; });
+        res.status(200).json({
+            status: 'success',
+            data: {
+                itemCategories: categories.map((c: any) => ({ ...c, productCount: countMap[c.key] || 0 })),
+                fallbackKey: FALLBACK_CATEGORY_KEY
+            }
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+// PUT /platform-settings/item-categories — super admin only. Body:
+// { itemCategories: [{ key?, label, skuPrefix? }] } in display order. An
+// entry without a key is new (its key is derived from the label); existing
+// keys never change. A category left out is removed, and its products move
+// to the fallback "Others" category (which itself can't be removed).
+exports.updateItemCategories = async (req: any, res: any, next: any) => {
+    try {
+        const requester = await Company.findById(req.user.id).select('role');
+        if (!requester || requester.role !== 'super') {
+            return next(new AppError(403, 'fail', 'Only the platform admin may edit this'), req, res, next);
+        }
+
+        const input = Array.isArray(req.body?.itemCategories) ? req.body.itemCategories : null;
+        if (!input || input.length < 1 || input.length > MAX_CATEGORIES) {
+            return next(new AppError(400, 'fail', `itemCategories must be an array of 1 to ${MAX_CATEGORIES} categories`), req, res, next);
+        }
+
+        const existing = await getItemCategories();
+        const existingKeys = new Set(existing.map((c: any) => c.key));
+        const usedKeys = new Set<string>();
+        const usedLabels = new Set<string>();
+        const cleaned: any[] = [];
+        for (let i = 0; i < input.length; i++) {
+            const label = String(input[i]?.label || '').trim();
+            if (!label) {
+                return next(new AppError(400, 'fail', `Category ${i + 1} needs a name`), req, res, next);
+            }
+            if (usedLabels.has(label.toLowerCase())) {
+                return next(new AppError(400, 'fail', `"${label}" is listed twice`), req, res, next);
+            }
+            usedLabels.add(label.toLowerCase());
+
+            let key = String(input[i]?.key || '').trim();
+            if (!key || !existingKeys.has(key)) {
+                // New category — derive a unique key from its name.
+                const base = slugify(label) || 'category';
+                key = base;
+                for (let n = 2; usedKeys.has(key) || existingKeys.has(key); n++) key = `${base}-${n}`;
+            }
+            if (usedKeys.has(key)) {
+                return next(new AppError(400, 'fail', `Category ${i + 1} is a duplicate`), req, res, next);
+            }
+            usedKeys.add(key);
+
+            const skuPrefix = String(input[i]?.skuPrefix || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6)
+                || defaultSkuPrefix(label);
+            cleaned.push({ key, label, skuPrefix });
+        }
+        if (!usedKeys.has(FALLBACK_CATEGORY_KEY)) {
+            return next(new AppError(400, 'fail', 'The "Others" category can\'t be removed'), req, res, next);
+        }
+
+        // Removed categories: their products move to "Others".
+        const removedKeys = existing.map((c: any) => c.key).filter((k: string) => !usedKeys.has(k));
+        let movedProducts = 0;
+        if (removedKeys.length) {
+            const r = await Product.updateMany({ itemCategory: { $in: removedKeys } }, { $set: { itemCategory: FALLBACK_CATEGORY_KEY } });
+            movedProducts = r.modifiedCount ?? r.nModified ?? 0;
+        }
+
+        await PlatformSettings.findOneAndUpdate(
+            { key: ITEM_CATEGORIES_KEY },
+            { itemCategories: cleaned },
+            { upsert: true, new: true }
+        );
+
+        res.status(200).json({
+            status: 'success',
+            data: { itemCategories: cleaned, removed: removedKeys, movedProducts }
+        });
+    } catch (error) {
+        next(error);
+    }
+};

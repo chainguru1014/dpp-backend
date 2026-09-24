@@ -103,6 +103,12 @@ exports.google = async (req: any, res: any, next: any) => {
             return res.status(401).json({ status: 'fail', message: 'Google token did not include an email' });
         }
 
+        // A staff employee's email signs in as that employee (see findOtpOwner).
+        const employee = await findActiveEmployeeByEmail(payload.email);
+        if (employee) {
+            return await sendEmployeeAuthResponse(employee, req, res);
+        }
+
         const result = await findOrLinkOrCreateByEmail({
             email: payload.email,
             provider: 'google',
@@ -154,6 +160,12 @@ exports.apple = async (req: any, res: any, next: any) => {
             return res.status(401).json({ status: 'fail', message: 'Apple token did not include an email' });
         }
 
+        // A staff employee's email signs in as that employee (see findOtpOwner).
+        const employee = await findActiveEmployeeByEmail(applePayload.email);
+        if (employee) {
+            return await sendEmployeeAuthResponse(employee, req, res);
+        }
+
         const firstName = user?.firstName;
         const lastName = user?.lastName;
         const fullName = [firstName, lastName].filter(Boolean).join(' ').trim();
@@ -178,6 +190,13 @@ exports.apple = async (req: any, res: any, next: any) => {
 /** Locate the User or Company document (if any) currently holding OTP state
  * for this email — used by both otpRequest and otpVerify. */
 const findOtpOwner = async (email: string) => {
+    // A staff employee's email always signs in as that employee — checked
+    // first, so a company admin email that is also its Supervisor (see
+    // companyController.ensureDefaultSupervisor) lands in the staff session.
+    const employee = await findActiveEmployeeByEmail(email, '+otpCode +otpExpiresAt +otpAttempts +otpResendAt');
+    if (employee) {
+        return { owner: employee, actorKind: 'Employee' };
+    }
     let owner = await User.findOne({ email }).select('+otpCode +otpExpiresAt +otpAttempts +otpResendAt');
     if (owner) {
         return { owner, actorKind: 'User' };
@@ -186,19 +205,39 @@ const findOtpOwner = async (email: string) => {
     if (owner) {
         return { owner, actorKind: 'Company' };
     }
-    // Corporate employees are a separate collection, matched by a one-way
-    // hash of the email (the plaintext address is never stored for lookup —
-    // see utils/pii.ts) rather than a direct `email` field match. This is
-    // what lets the app's single login screen recognize a corporate address
-    // without a separate "Staff" flow — see employeeAuthController.otpRequest
-    // for the same domain/isActive checks, mirrored here.
-    const domain = emailDomain(email);
-    const employeeHash = hashEmail(email);
-    const employee = await Employee.findOne({ emailHash: employeeHash }).select('+otpCode +otpExpiresAt +otpAttempts +otpResendAt');
-    if (employee && employee.emailDomain === domain && employee.isActive) {
-        return { owner: employee, actorKind: 'Employee' };
-    }
     return { owner: null, actorKind: null };
+};
+
+// Corporate employees are a separate collection, matched by a one-way hash of
+// the email (the plaintext address is never stored for lookup — see
+// utils/pii.ts) rather than a direct `email` field match. Same domain/isActive
+// checks as employeeAuthController.otpRequest.
+const findActiveEmployeeByEmail = async (email: string, select = '') => {
+    const normalized = normalizeEmail(email);
+    if (!normalized) return null;
+    const employee = await Employee.findOne({ emailHash: hashEmail(normalized) }).select(select);
+    if (employee && employee.emailDomain === emailDomain(normalized) && employee.isActive) {
+        return employee;
+    }
+    return null;
+};
+
+// Signs an Employee in and sends the same envelope sendAuthResponse uses
+// (plus actorKind: 'Employee'), so every sign-in method (OTP, Google, Apple)
+// and both clients (web + app) handle it the same way.
+const sendEmployeeAuthResponse = async (employee: any, req: any, res: any) => {
+    employee.lastLoginAt = new Date();
+    await employee.save();
+    await appendAuditLog(employee._id, 'login', { emailDomain: employee.emailDomain }, req.ip);
+    const token = signJwt({ id: employee._id, actorKind: 'Employee', role: employee.role });
+    await employee.populate({ path: 'company_id', select: 'name' });
+    return res.status(200).json({
+        status: 'success',
+        token,
+        user: buildEmployeeResponse(employee),
+        actorKind: 'Employee',
+        message: 'Login successful'
+    });
 };
 
 /** Shared by otpRequest (sign in) and signupOtpRequest (sign up): applies the
@@ -344,17 +383,7 @@ exports.otpVerify = async (req: any, res: any, next: any) => {
         // sendAuthResponse uses, so the app's existing response handling
         // works unchanged for either actor kind.
         if (actorKind === 'Employee') {
-            owner.lastLoginAt = new Date();
-            await owner.save();
-            await appendAuditLog(owner._id, 'login', { emailDomain: owner.emailDomain }, req.ip);
-            const token = signJwt({ id: owner._id, actorKind: 'Employee', role: owner.role });
-            return res.status(200).json({
-                status: 'success',
-                token,
-                user: buildEmployeeResponse(owner),
-                actorKind: 'Employee',
-                message: 'Login successful'
-            });
+            return await sendEmployeeAuthResponse(owner, req, res);
         }
 
         await owner.save();

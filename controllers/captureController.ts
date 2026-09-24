@@ -106,14 +106,54 @@ exports.create = async (req: any, res: any, next: any) => {
     }
 };
 
-exports.list = async (req: any, res: any, next: any) => {
+// Which captures a read request may see. Read access also covers the web
+// dashboard: a Company actor sees its own company's captures, and the super
+// admin sees every company's (optionally narrowed with ?company_id=).
+// ?mine=true — an employee's own captures only (the web dashboard for a
+// working employee); the app's capture screens keep the company-wide view.
+const resolveReadScope = async (req: any) => {
+    let company: any = null;
+    if (req.user.actorKind === 'Company') {
+        company = await Company.findById(req.user.id).select('role');
+    } else {
+        ({ company } = await resolveEmployeeActor(req));
+    }
+    if (!company) return { company: null, isSuper: false, filter: null };
+    const isSuper = req.user.actorKind === 'Company' && company.role === 'super';
+
+    const filter: any = {};
+    if (!isSuper) {
+        filter.company_id = company._id;
+    } else if (req.query?.company_id) {
+        filter.company_id = String(req.query.company_id);
+    }
+    if (req.query?.mine === 'true' && req.user.actorKind === 'Employee') {
+        filter.employee_id = req.user.id;
+    }
+    return { company, isSuper, filter };
+};
+
+// GET /captures/count — total captures in the requester's scope (dashboard
+// "Total Captures" card). Same scoping as list, without its row limit.
+exports.count = async (req: any, res: any, next: any) => {
     try {
-        const { company } = await resolveEmployeeActor(req);
+        const { company, filter } = await resolveReadScope(req);
         if (!company) {
             return next(new AppError(404, 'fail', 'No company found for this account'), req, res, next);
         }
+        const total = await CaptureRecord.countDocuments(filter);
+        res.status(200).json({ status: 'success', data: { total } });
+    } catch (error) {
+        next(error);
+    }
+};
 
-        const filter: any = { company_id: company._id };
+exports.list = async (req: any, res: any, next: any) => {
+    try {
+        const { company, isSuper, filter } = await resolveReadScope(req);
+        if (!company) {
+            return next(new AppError(404, 'fail', 'No company found for this account'), req, res, next);
+        }
 
         if (req.query?.stepIndex !== undefined && req.query?.stepIndex !== '') {
             const stepIndex = Number(req.query.stepIndex);
@@ -132,7 +172,16 @@ exports.list = async (req: any, res: any, next: any) => {
             filter.flagged = true;
         }
 
-        const docs = await CaptureRecord.find(filter).sort({ capturedAt: -1 }).limit(200);
+        const limit = req.user.actorKind === 'Company' ? 1000 : 200;
+        let docs: any[] = await CaptureRecord.find(filter).sort({ capturedAt: -1 }).limit(limit).lean();
+
+        // Super admin spans companies — tag each capture with its company name.
+        if (isSuper && docs.length) {
+            const companies = await Company.find({ _id: { $in: [...new Set(docs.map((d) => String(d.company_id)))] } }).select('name').lean();
+            const names: any = {};
+            companies.forEach((c: any) => { names[String(c._id)] = c.name; });
+            docs = docs.map((d) => ({ ...d, companyName: names[String(d.company_id)] || '' }));
+        }
 
         res.status(200).json({
             status: 'success',

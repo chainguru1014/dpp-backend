@@ -18,6 +18,17 @@ const platformSettingsSchema = new mongoose.Schema({
             entity: { type: String, trim: true, default: '' }
         }],
         default: []
+    },
+    // key 'itemCategories' — product item categories managed by the super
+    // admin (see utils/itemCategories.ts).
+    itemCategories: {
+        type: [{
+            _id: false,
+            key: { type: String, trim: true, required: true },
+            label: { type: String, trim: true, required: true },
+            skuPrefix: { type: String, trim: true, default: '' }
+        }],
+        default: undefined
     }
 });
 

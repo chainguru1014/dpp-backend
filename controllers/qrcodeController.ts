@@ -17,15 +17,23 @@ const mongoose = require('mongoose');
 const { buildPublicProductUrl, extractProductFromQrUrl } = require('../utils/publicUrl');
 const { normalizeProductMedia } = require('../utils/productMedia');
 const { resolvePmc } = require('../services/pmcService');
+const { geolocateIp, reverseGeocode } = require('../utils/geoLocate');
 
 // Resolve an optional owner scope (owner_kind + owner_id) from a request into a
-// product_id $in filter. Returns null when no owner scope is requested.
+// scan filter. A Company sees scans of the products it owns; a normal DPP
+// user sees every scan they made themselves, whether or not they own the
+// product (`ids` is still their owned products, for product counts).
+// Returns null when no owner scope is requested.
 const resolveOwnerProductMatch = async (req: any) => {
     const ownerKind = req.query?.owner_kind === 'User' ? 'User' : req.query?.owner_kind === 'Company' ? 'Company' : null;
     const ownerId = req.query?.owner_id;
     if (!ownerKind || !ownerId || !mongoose.Types.ObjectId.isValid(String(ownerId))) return null;
-    const ids = await getOwnedProductIds(ownerKind, new mongoose.Types.ObjectId(String(ownerId)));
-    return { ids, filter: { product_id: { $in: ids } } };
+    const ownerObjId = new mongoose.Types.ObjectId(String(ownerId));
+    const ids = await getOwnedProductIds(ownerKind, ownerObjId);
+    if (ownerKind === 'User') {
+        return { kind: 'User', ids, filter: { user_id: ownerObjId } };
+    }
+    return { kind: 'Company', ids, filter: { product_id: { $in: ids } } };
 };
 
 const divcount = 20000;
@@ -304,7 +312,7 @@ exports.recordScan = async (req: any, res: any, next: any) => {
             ''
         );
 
-        const loc = location && typeof location === 'object' ? {
+        let loc: any = location && typeof location === 'object' ? {
             country: location.country || '',
             region: location.region || '',
             city: location.city || '',
@@ -312,6 +320,19 @@ exports.recordScan = async (req: any, res: any, next: any) => {
             longitude: location.longitude != null ? Number(location.longitude) : null,
             source: location.source || (location.latitude != null ? 'gps' : '')
         } : undefined;
+
+        // Fill in country/city server-side when the client didn't send them —
+        // reverse-geocode GPS coords if present, otherwise geolocate the IP.
+        if (!loc?.country) {
+            if (loc && loc.latitude != null && loc.longitude != null) {
+                const place = await reverseGeocode(loc.latitude, loc.longitude);
+                if (place) loc = { ...loc, ...place };
+            }
+            if (!loc?.country) {
+                const byIp = await geolocateIp(ip);
+                if (byIp) loc = loc && loc.latitude != null ? { ...byIp, latitude: loc.latitude, longitude: loc.longitude, source: loc.source } : byIp;
+            }
+        }
 
         // Best-effort: stamp the scan with its PMC so analytics/AI tooling can
         // key off one canonical code instead of qrcode_id. Never blocks recording
@@ -393,9 +414,16 @@ exports.getScanHistory = async (req: any, res: any, next: any) => {
         else if (security === 'failed') match.security_verified = false;
         else if (security === 'na') match.security_verified = { $in: [null, undefined] };
 
-        // Owner scope (company/user): restrict to the products they own.
+        // Owner scope: a company — the products it owns (still honoring a
+        // selected product); a normal DPP user — their own scans.
         const ownerScope = await resolveOwnerProductMatch(req);
-        if (ownerScope) match.product_id = { $in: ownerScope.ids };
+        if (ownerScope?.kind === 'User') {
+            Object.assign(match, ownerScope.filter);
+        } else if (ownerScope) {
+            match.product_id = match.product_id
+                ? (ownerScope.ids.some((id: any) => String(id) === String(match.product_id)) ? match.product_id : { $in: [] })
+                : { $in: ownerScope.ids };
+        }
 
         const pipeline: any[] = [
             { $match: match },
@@ -500,14 +528,8 @@ exports.getScanHistory = async (req: any, res: any, next: any) => {
  * Dashboard analytics: totals, scans-per-day series, source / security /
  * reaction / audience breakdowns, and top products / brands by scans.
  */
-// Fixed category list — mirrors backend/controllers/productController.ts and
-// PROCESS_STEP_TYPE_KEYS in companyController.ts.
-const ITEM_CATEGORY_KEYS = ['denim', 'tops', 'bottoms', 'outerwear', 'others'];
-
-// Default Traceability Overview destination columns — always shown in this
-// order regardless of actual scan data, with everything else folded into
-// "Others".
-const DEFAULT_DESTINATION_COUNTRIES = ['Germany', 'France', 'Netherlands', 'Spain', 'United Kingdom'];
+// Item categories are managed by the super admin — see utils/itemCategories.ts.
+const { getItemCategories } = require('../utils/itemCategories');
 
 exports.getAnalytics = async (req: any, res: any, next: any) => {
     try {
@@ -540,7 +562,7 @@ exports.getAnalytics = async (req: any, res: any, next: any) => {
         if (q.city) scanMatch['location.city'] = String(q.city);
         if (q.item_category || q.origin_country) {
             const productFilter: any = { is_deleted: { $ne: true } };
-            if (ownerScope) productFilter._id = { $in: ownerScope.ids };
+            if (ownerScope?.kind === 'Company') productFilter._id = { $in: ownerScope.ids };
             if (q.item_category) productFilter.itemCategory = String(q.item_category);
             if (q.origin_country) productFilter['traceabilityEsg.madeIn'] = String(q.origin_country);
             const matchingIds = await Product.find(productFilter).distinct('_id');
@@ -609,7 +631,7 @@ exports.getAnalytics = async (req: any, res: any, next: any) => {
                 ...scanScopeStage,
                 { $match: { 'location.country': { $nin: [null, ''] } } },
                 { $group: { _id: '$location.country', count: { $sum: 1 } } },
-                { $sort: { count: -1 } }, { $limit: 10 }
+                { $sort: { count: -1 } }
             ]),
             ScanRecord.aggregate([
                 ...scanScopeStage,
@@ -725,28 +747,24 @@ exports.getAnalytics = async (req: any, res: any, next: any) => {
         const identifierTypes: any = { qr: 0, barcode: 0, nfc: 0, rfid: 0, gs1dl: 0 };
         identifierTypeAgg.forEach((i: any) => { if (identifierTypes[i._id] !== undefined) identifierTypes[i._id] = i.count; });
 
-        // Category donut: fixed key order (ITEM_CATEGORY_KEYS) so the legend
-        // is stable even for categories with zero scans.
+        // Category donut: the managed category order, so the legend is stable
+        // even for categories with zero scans.
+        const itemCategories = await getItemCategories();
+        const ITEM_CATEGORY_KEYS = itemCategories.map((c: any) => c.key);
         const categoryCountMap: any = {};
         categoryAgg.forEach((c: any) => { categoryCountMap[c._id] = c.count; });
-        const categoryBreakdown = ITEM_CATEGORY_KEYS.map((key) => ({ category: key, count: categoryCountMap[key] || 0 }));
+        const categoryBreakdown = ITEM_CATEGORY_KEYS.map((key: string) => ({ category: key, count: categoryCountMap[key] || 0 }));
 
         const countryBreakdown = countryAgg.map((c: any) => ({ country: c._id, count: c.count }));
-        // Table columns are always these 5 default EU markets, with
-        // everything else (including any of these 5 with zero scans) folded
-        // in as needed — not computed dynamically from actual scan volume.
-        const topDestinationCountries = DEFAULT_DESTINATION_COUNTRIES;
+        // Table columns: every country with at least one scan, most-scanned first.
+        const topDestinationCountries = countryBreakdown.map((c: any) => c.country);
 
         const traceabilityOverview = traceRowsAgg.map((row: any) => {
             const destinationBreakdown: any = {};
             topDestinationCountries.forEach((c: string) => { destinationBreakdown[c] = 0; });
-            let others = 0;
             (row.countries || []).forEach((c: string) => {
-                if (!c) return;
-                if (topDestinationCountries.includes(c)) destinationBreakdown[c] = (destinationBreakdown[c] || 0) + 1;
-                else others += 1;
+                if (c) destinationBreakdown[c] = (destinationBreakdown[c] || 0) + 1;
             });
-            destinationBreakdown.Others = others;
 
             const cityCounts: any = {};
             (row.cities || []).forEach((c: string) => { if (c) cityCounts[c] = (cityCounts[c] || 0) + 1; });
@@ -806,9 +824,12 @@ exports.getAnalytics = async (req: any, res: any, next: any) => {
                 topBrands: topBrandsAgg,
                 categoryBreakdown,
                 countryBreakdown,
+                destinationColumns: topDestinationCountries,
                 traceabilityOverview,
                 filterOptions: {
                     itemCategories: ITEM_CATEGORY_KEYS,
+                    // key -> display name, for the donut legend, filter and table.
+                    itemCategoryLabels: Object.fromEntries(itemCategories.map((c: any) => [c.key, c.label])),
                     originCountries: (originCountryOptions || []).filter(Boolean).sort(),
                     destinationCountries: countryBreakdown.map((c: any) => c.country),
                     cities: (cityOptions || []).filter(Boolean).sort()

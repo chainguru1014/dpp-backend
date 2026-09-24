@@ -25,8 +25,86 @@ const PROCESS_STEP_TYPE_KEYS = [
 exports.getAllCompanys = base.getAll(Company);
 exports.getCompany = base.getOne(Company);
 
-// Don't update password on this 
-exports.updateCompany = base.updateOne(Company);
+// Makes the company's contact/admin email a Supervisor employee of that
+// company, so it can sign in to the dashboard right away. Idempotent: an
+// existing employee of this same company is left untouched. Returns a
+// warning message (never throws for business cases) when the email already
+// belongs to another live company's staff; '' otherwise.
+const ensureDefaultSupervisor = async (company: any, rawEmailInput: any) => {
+    const rawEmail = String(rawEmailInput || '').trim().toLowerCase();
+    if (!rawEmail || !rawEmail.includes('@') || company.role === 'super') return '';
+    const domain = emailDomain(rawEmail);
+    const emailHash = hashEmail(rawEmail);
+
+    if (!(company.allowedEmailDomains || []).includes(domain)) {
+        await Company.updateOne({ _id: company._id }, { $addToSet: { allowedEmailDomains: domain } });
+    }
+
+    const existing = await Employee.findOne({ emailHash });
+    if (existing && String(existing.company_id) === String(company._id)) return '';
+    if (existing) {
+        const owner = await Company.findById(existing.company_id).select('name');
+        if (owner) {
+            return `${rawEmail} is already a staff account of "${owner.name}", so it was not added as this company's Supervisor.`;
+        }
+    }
+
+    // New employee — or an orphaned one whose company was deleted, which is
+    // moved over to this company.
+    const terminalSeq = await getNextSequence(`terminal:${company._id}`);
+    const fields = {
+        email: rawEmail,
+        emailHash,
+        emailDomain: domain,
+        company_id: company._id,
+        name: existing?.name || `${String(company.name || '').trim()} admin`,
+        role: 'admin',
+        employeeType: 'supervisor',
+        isActive: true,
+        terminalId: formatTerminalId(terminalSeq)
+    };
+    if (existing) {
+        existing.set(fields);
+        await existing.save();
+    } else {
+        await Employee.create(fields);
+    }
+    return '';
+};
+
+// Don't update password on this
+exports.updateCompany = async (req: any, res: any, next: any) => {
+    try {
+        const doc = await Company.findByIdAndUpdate(req.params.id, req.body, {
+            new: true,
+            runValidators: true
+        });
+        if (!doc) {
+            return next(new AppError(404, 'fail', 'No document found with that id'), req, res, next);
+        }
+
+        // Adding/changing the company's admin email also provisions it as
+        // the company's Supervisor (same as on creation).
+        let warning = '';
+        if (req.body?.email) {
+            try {
+                warning = await ensureDefaultSupervisor(doc, req.body.email);
+            } catch (provisionErr) {
+                console.error('Default supervisor provisioning failed:', provisionErr);
+            }
+        }
+
+        res.status(200).json({
+            status: 'success',
+            data: {
+                doc
+            },
+            warning
+        });
+    } catch (error) {
+        next(error);
+    }
+};
 exports.deleteCompany = base.deleteOne(Company);
 exports.addCompany = async(req: any, res: any, next: any) => {
     try {
@@ -57,42 +135,19 @@ exports.addCompany = async(req: any, res: any, next: any) => {
         // someone who can sign in to the dashboard immediately rather than
         // needing a pre-existing employee to invite them. Never blocks
         // company creation itself — email is optional on Company.
-        const rawEmail = String(req.body?.email || '').trim();
-        if (rawEmail && rawEmail.includes('@')) {
-            try {
-                const domain = emailDomain(rawEmail);
-                const emailHash = hashEmail(rawEmail);
-
-                if (!doc.allowedEmailDomains.includes(domain)) {
-                    doc.allowedEmailDomains.push(domain);
-                    await doc.save();
-                }
-
-                const existingEmployee = await Employee.findOne({ emailHash });
-                if (!existingEmployee) {
-                    const terminalSeq = await getNextSequence(`terminal:${doc._id}`);
-                    await Employee.create({
-                        email: rawEmail.toLowerCase(),
-                        emailHash,
-                        emailDomain: domain,
-                        company_id: doc._id,
-                        name: `${String(req.body?.name || '').trim()} admin`,
-                        role: 'admin',
-                        employeeType: 'supervisor',
-                        isActive: true,
-                        terminalId: formatTerminalId(terminalSeq)
-                    });
-                }
-            } catch (provisionErr) {
-                console.error('Default supervisor provisioning failed:', provisionErr);
-            }
+        let warning = '';
+        try {
+            warning = await ensureDefaultSupervisor(doc, req.body?.email);
+        } catch (provisionErr) {
+            console.error('Default supervisor provisioning failed:', provisionErr);
         }
 
         res.status(200).json({
             status: 'success',
             data: {
                 doc
-            }
+            },
+            warning
         });
 
     } catch (error) {

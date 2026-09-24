@@ -58,27 +58,35 @@ const numThreads = 4;
 
 const delay = (ms : any) => new Promise(resolve => setTimeout(resolve, ms))
 
-// Fixed category list (mirrors PROCESS_STEP_TYPE_KEYS in companyController.ts)
-// plus a matching SKU/style-number prefix, e.g. "DNM-2501-01".
-const ITEM_CATEGORY_PREFIXES: { [key: string]: string } = {
-    denim: 'DNM',
-    tops: 'TSH',
-    bottoms: 'BOT',
-    outerwear: 'OUT',
-    others: 'OTH',
-};
-const ITEM_CATEGORY_KEYS = Object.keys(ITEM_CATEGORY_PREFIXES);
+// Item categories are managed by the super admin (utils/itemCategories.ts);
+// each carries the SKU/style-number prefix, e.g. "DNM-2501-01".
+const { getItemCategories, FALLBACK_CATEGORY_KEY } = require('../utils/itemCategories');
 
-function randomItemCategory() {
-    return ITEM_CATEGORY_KEYS[Math.floor(Math.random() * ITEM_CATEGORY_KEYS.length)];
-}
-
-function randomSkuStyleNumber(category: string) {
-    const prefix = ITEM_CATEGORY_PREFIXES[category] || 'OTH';
+function randomSkuStyleNumber(prefix: string) {
     const yymm = String(Math.floor(2401 + Math.random() * 700)); // e.g. 2501-2601-ish spread
     const seq = String(Math.floor(1 + Math.random() * 99)).padStart(2, '0');
-    return `${prefix}-${yymm}-${seq}`;
+    return `${prefix || 'OTH'}-${yymm}-${seq}`;
 }
+
+// Validates body.itemCategory against the managed list (defaulting a missing
+// one to "Others" on create) and fills an empty skuStyleNumber from the
+// category's prefix. Returns an error message, or '' when OK.
+const applyItemCategory = async (body: any, { isCreate, currentCategory }: { isCreate: boolean; currentCategory?: string }) => {
+    const categories = await getItemCategories();
+    if (body.itemCategory === '' || body.itemCategory == null) {
+        if (isCreate) body.itemCategory = FALLBACK_CATEGORY_KEY;
+        else delete body.itemCategory;
+    }
+    if (body.itemCategory !== undefined && !categories.some((c: any) => c.key === body.itemCategory)) {
+        return `Unknown item category "${body.itemCategory}"`;
+    }
+    if (isCreate ? !body.skuStyleNumber : body.skuStyleNumber === '') {
+        const key = body.itemCategory || currentCategory || FALLBACK_CATEGORY_KEY;
+        const prefix = categories.find((c: any) => c.key === key)?.skuPrefix;
+        body.skuStyleNumber = randomSkuStyleNumber(prefix);
+    }
+    return '';
+};
 
 exports.getAllProducts = async(req: any, res: any, next: any) => {
     try {
@@ -198,13 +206,15 @@ exports.updateProduct = async(req: any, res: any, next: any) => {
             return next(new AppError(404, 'fail', 'No product found with that id'), req, res, next);
         }
 
-        if (product.total_minted_amount > 0) {
-            return next(new AppError(404, 'fail', "Can't update this product. You already minted."), req, res, next);
-        }
         if (product.is_deleted) {
             return next(new AppError(404, 'fail', "Product does not exists."), req, res, next);
         }
-        
+
+        const categoryError = await applyItemCategory(req.body, { isCreate: false, currentCategory: product.itemCategory });
+        if (categoryError) {
+            return next(new AppError(400, 'fail', categoryError), req, res, next);
+        }
+
         const doc = await Product.findByIdAndUpdate(req.params.id, req.body, {
             new: true,
             runValidators: true
@@ -267,11 +277,9 @@ exports.addProduct = async(req: any, res: any, next: any) => {
 
         let product = req.body;
         product.total_minted_amount = 0;
-        if (!product.itemCategory) {
-            product.itemCategory = randomItemCategory();
-        }
-        if (!product.skuStyleNumber) {
-            product.skuStyleNumber = randomSkuStyleNumber(product.itemCategory);
+        const categoryError = await applyItemCategory(product, { isCreate: true });
+        if (categoryError) {
+            return next(new AppError(400, 'fail', categoryError), req, res, next);
         }
 
         console.log(product);

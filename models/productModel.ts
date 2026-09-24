@@ -51,11 +51,11 @@ const productSchema = new mongoose.Schema({
         durability: { type: String, default: '' },
         traceableIdentity: { type: String, default: '' }
     },
-    // Fixed category list (dashboard groups/filters by this) — mirrors the
-    // pattern used for process-step "type" in companyController.ts.
+    // Category key (dashboard groups/filters by this). The list itself is
+    // managed by the super admin — see utils/itemCategories.ts; the
+    // controllers validate against it.
     itemCategory: {
         type: String,
-        enum: ['denim', 'tops', 'bottoms', 'outerwear', 'others'],
         default: 'others'
     },
     // Free-text style/SKU code (e.g. "DNM-2501-01"), shown on the dashboard's
