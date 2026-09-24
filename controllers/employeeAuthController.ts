@@ -1,5 +1,4 @@
 const Employee = require('../models/employeeModel');
-const AppError = require('../utils/appError');
 const { signJwt } = require('../utils/authShared');
 const { normalizeEmail, emailDomain, hashEmail } = require('../utils/pii');
 const { generateOtp, sendOtpEmail, OTP_EXPIRY_MINUTES } = require('../utils/otp');
@@ -73,12 +72,8 @@ exports.otpRequest = async (req: any, res: any, next: any) => {
         Object.assign(employee, otpFields);
         await employee.save();
 
-        try {
-            await sendOtpEmail(email, code);
-        } catch (err) {
-            console.error('sendOtpEmail failed:', err);
-            return next(new AppError(502, 'fail', 'Failed to send verification email'));
-        }
+        // Fire-and-forget — see authController.issueOtp.
+        sendOtpEmail(email, code).catch((err: any) => console.error('sendOtpEmail failed:', err));
 
         if (process.env.NODE_ENV !== 'production') {
             console.log(`[dev-only] Employee OTP code for domain ${domain}: ${code}`);

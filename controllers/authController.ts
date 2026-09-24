@@ -244,7 +244,7 @@ const sendEmployeeAuthResponse = async (employee: any, req: any, res: any) => {
  * 60-second per-email resend cooldown, generates+stores a fresh code on
  * `owner`, emails it, and sends the standard 200 response. Both callers have
  * already decided whether `owner` should exist at this point. */
-const issueOtp = async (owner: any, email: string, res: any, next: any) => {
+const issueOtp = async (owner: any, email: string, res: any) => {
     if (owner.otpResendAt && owner.otpResendAt.getTime() > Date.now()) {
         return res.status(429).json({ status: 'fail', message: 'Please wait before requesting another code' });
     }
@@ -257,12 +257,10 @@ const issueOtp = async (owner: any, email: string, res: any, next: any) => {
     owner.otpAttempts = 0;
     await owner.save();
 
-    try {
-        await sendOtpEmail(email, code);
-    } catch (err) {
-        console.error('sendOtpEmail failed:', err);
-        return next(new AppError(502, 'fail', 'Failed to send verification email'));
-    }
+    // Fire-and-forget: SMTP takes several seconds, so respond immediately and
+    // let delivery finish in the background. A failed send is only logged —
+    // the user can use "resend" after the 60-second cooldown.
+    sendOtpEmail(email, code).catch((err: any) => console.error('sendOtpEmail failed:', err));
 
     // Dev convenience only — never log OTP codes outside local/dev.
     if (process.env.NODE_ENV !== 'production') {
@@ -289,7 +287,7 @@ exports.otpRequest = async (req: any, res: any, next: any) => {
             return res.status(404).json({ status: 'fail', message: 'This email is not registered. Please sign up first.' });
         }
 
-        return await issueOtp(owner, email, res, next);
+        return await issueOtp(owner, email, res);
     } catch (error) {
         next(error);
     }
@@ -323,7 +321,7 @@ exports.signupOtpRequest = async (req: any, res: any, next: any) => {
             emailVerified: false
         });
 
-        return await issueOtp(owner, email, res, next);
+        return await issueOtp(owner, email, res);
     } catch (error) {
         next(error);
     }
