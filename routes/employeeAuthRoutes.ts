@@ -22,6 +22,10 @@ const otpVerifyLimiter = rateLimit({
 
 router.post('/otp/request', otpRequestLimiter, EmployeeAuthController.otpRequest);
 router.post('/otp/verify', otpVerifyLimiter, EmployeeAuthController.otpVerify);
+// Re-fetches the calling employee's own record — lets the app refresh
+// admin-changed fields (e.g. rfidReaderIds) on reload/focus without
+// requiring a full logout/login cycle.
+router.get('/me', protect, restrictTo('Employee'), EmployeeAuthController.me);
 router.get('/audit-log', protect, restrictToEmployeeRoleOrCompany('manager', 'admin'), EmployeeAuditLogController.list);
 
 // Roster management — Company (brand admin) accounts, or an Employee acting

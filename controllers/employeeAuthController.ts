@@ -31,6 +31,27 @@ const buildEmployeeResponse = (employee: any) => ({
 // same response shape for an Employee owner — see findOtpOwner there.
 exports.buildEmployeeResponse = buildEmployeeResponse;
 
+// GET /employee-auth/me — the calling employee's own current record. Used by
+// the app to pick up admin-side changes (e.g. rfidReaderIds set from the
+// Staff Roster) on reload/focus, without requiring a fresh login — otp/verify
+// only ever runs once at sign-in, so without this the app would otherwise
+// keep serving the employee data it cached at that moment indefinitely.
+exports.me = async (req: any, res: any, next: any) => {
+    try {
+        const employee = await Employee.findById(req.user.id).populate({ path: 'company_id', select: 'name' });
+        if (!employee) {
+            return res.status(404).json({ status: 'fail', message: 'Employee not found' });
+        }
+        return res.status(200).json({
+            status: 'success',
+            employee: buildEmployeeResponse(employee),
+            actorKind: 'Employee'
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
 // POST /employee-auth/otp/request — corporate-SSO entry point. Admin-provisioned
 // only: this only succeeds for an emailHash a company admin already created via
 // employeeController.invite. The raw email exists only for the duration of this
