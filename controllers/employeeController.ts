@@ -18,9 +18,26 @@ const buildEmployeeResponse = (employee: any) => ({
     employeeType: employee.employeeType,
     isActive: employee.isActive,
     terminalId: employee.terminalId,
+    rfidReaderIds: {
+        yometel: employee.rfidReaderIds?.yometel || '',
+        impinj: employee.rfidReaderIds?.impinj || '',
+        zebra: employee.rfidReaderIds?.zebra || ''
+    },
     lastLoginAt: employee.lastLoginAt,
     createdAt: employee.createdAt
 });
+
+// Picks only the 3 known reader-brand keys out of a request body's
+// rfidReaderIds object, coercing each to a trimmed string — never trusts the
+// client to send exactly this shape.
+const sanitizeRfidReaderIds = (input: any): { yometel: string; impinj: string; zebra: string } | null => {
+    if (!input || typeof input !== 'object') return null;
+    return {
+        yometel: String(input.yometel || '').trim(),
+        impinj: String(input.impinj || '').trim(),
+        zebra: String(input.zebra || '').trim()
+    };
+};
 
 /** Resolves the Company doc a roster request (invite/list/update/remove) acts
  * against, and whether the requester may WRITE to it. Mirrors
@@ -119,6 +136,8 @@ exports.invite = async (req: any, res: any, next: any) => {
             return res.status(403).json({ status: 'fail', message: 'A Supervisor may only manage working employees, not other Supervisors' });
         }
 
+        const rfidReaderIds = sanitizeRfidReaderIds(req.body?.rfidReaderIds);
+
         let isNew = false;
         if (employee) {
             employee.email = email;
@@ -127,6 +146,9 @@ exports.invite = async (req: any, res: any, next: any) => {
             employee.employeeCode = req.body?.employeeCode || employee.employeeCode;
             employee.name = req.body?.name || employee.name;
             employee.isActive = true;
+            if (rfidReaderIds) {
+                employee.rfidReaderIds = { ...(employee.rfidReaderIds || {}), ...rfidReaderIds };
+            }
             await employee.save();
         } else {
             isNew = true;
@@ -141,7 +163,8 @@ exports.invite = async (req: any, res: any, next: any) => {
                 role,
                 employeeType,
                 isActive: true,
-                terminalId: formatTerminalId(terminalSeq)
+                terminalId: formatTerminalId(terminalSeq),
+                rfidReaderIds: rfidReaderIds || undefined
             });
         }
 
@@ -241,6 +264,12 @@ exports.update = async (req: any, res: any, next: any) => {
         if (isActive !== undefined) employee.isActive = !!isActive;
         if (employeeCode !== undefined) employee.employeeCode = employeeCode;
         if (name !== undefined) employee.name = name;
+        if (req.body?.rfidReaderIds !== undefined) {
+            const rfidReaderIds = sanitizeRfidReaderIds(req.body.rfidReaderIds);
+            if (rfidReaderIds) {
+                employee.rfidReaderIds = { ...(employee.rfidReaderIds || {}), ...rfidReaderIds };
+            }
+        }
         await employee.save();
 
         await appendAuditLog(employee._id, 'updated', { role: employee.role, employeeType: employee.employeeType, isActive: employee.isActive, by: String(req.user.id) }, req.ip);

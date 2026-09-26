@@ -91,6 +91,7 @@ exports.create = async (req: any, res: any, next: any) => {
             imagePath: String(req.body?.imagePath || ''),
             productId: String(req.body?.productId || ''),
             qrcodeId: String(req.body?.qrcodeId || ''),
+            productImage: String(req.body?.productImage || ''),
             location,
             device,
             terminalId: employee.terminalId || '',

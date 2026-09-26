@@ -73,6 +73,14 @@ const captureRecordSchema = new mongoose.Schema({
         type: String,
         default: ''
     },
+    // Snapshot of the resolved product's first image at capture time — RFID
+    // and NFC captures have no photo of their own (unlike qr/barcode, which
+    // store one in imagePath), so the app's RFID recent-captures card shows
+    // this instead. Blank when the identifier didn't resolve to a product.
+    productImage: {
+        type: String,
+        default: ''
+    },
     // Best-effort — blank when the device/browser couldn't provide it.
     location: {
         latitude: { type: Number, default: null },

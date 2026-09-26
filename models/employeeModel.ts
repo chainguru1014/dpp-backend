@@ -68,6 +68,16 @@ const employeeSchema = new mongoose.Schema({
     terminalId: {
         type: String
     },
+    // Physical RFID reader assigned to this employee, per reader brand — set
+    // by a Supervisor/admin from the Staff Roster (frontend), read by the
+    // mobile app's RFID Scan flow (CorporateScannerScreen) to show "your
+    // reader" and gate the Connect button. All optional/blank until assigned;
+    // the app treats a blank value as "no reader assigned" for that brand.
+    rfidReaderIds: {
+        yometel: { type: String, default: '' },
+        impinj: { type: String, default: '' },
+        zebra: { type: String, default: '' }
+    },
     // OTP fields, same pattern as userModel/companyModel — select:false so
     // otpCode never comes back on a normal find().
     otpCode: {

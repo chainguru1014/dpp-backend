@@ -20,6 +20,11 @@ const buildEmployeeResponse = (employee: any) => ({
     employeeType: employee.employeeType,
     isActive: employee.isActive,
     terminalId: employee.terminalId,
+    rfidReaderIds: {
+        yometel: employee.rfidReaderIds?.yometel || '',
+        impinj: employee.rfidReaderIds?.impinj || '',
+        zebra: employee.rfidReaderIds?.zebra || ''
+    },
     lastLoginAt: employee.lastLoginAt
 });
 // Exported so authController's unified /auth/otp/* endpoints can build the
