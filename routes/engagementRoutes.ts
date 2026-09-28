@@ -7,6 +7,7 @@ router.post('/follow', EngagementController.followBrand);
 router.delete('/follow', EngagementController.unfollowBrand);
 router.get('/follow/list', EngagementController.listFollowedBrands);
 router.get('/brand/stats', EngagementController.getBrandStats);
+router.get('/brand/followers', EngagementController.listBrandFollowers);
 
 router.get('/album/status', EngagementController.getAlbumStatus);
 router.post('/album', EngagementController.addAlbumItem);

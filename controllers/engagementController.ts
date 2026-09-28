@@ -184,6 +184,45 @@ exports.getBrandStats = async (req: any, res: any, next: any) => {
     }
 };
 
+/**
+ * GET /engagement/brand/followers?website=
+ * Lists the users following one brand (matched by website URL), most
+ * recent first — powers the Brand Detail page's "Customers" tile dialog.
+ * Consumer ("client") accounts identify via `nickname` only and are never
+ * asked for a real name (see userModel.ts); firstName/lastName only exist
+ * for legacy or agent-type accounts. Prefer nickname, fall back to a full
+ * name, then `null` (rendered as a neutral placeholder by the client)
+ * rather than a blank row.
+ */
+exports.listBrandFollowers = async (req: any, res: any, next: any) => {
+    try {
+        const website = normalizeWebsite(req.query?.website || req.query?.brandWebsiteUrl);
+        if (!website) {
+            return res.status(400).json({ status: 'fail', message: 'website is required' });
+        }
+        const rows = await runWithDbRetry(() =>
+            FollowedBrand.aggregate([
+                { $match: { brandWebsiteUrl: website } },
+                { $sort: { updatedAt: -1 } },
+                { $limit: 500 },
+                { $lookup: { from: 'users', localField: 'user_id', foreignField: '_id', as: 'user' } },
+                { $unwind: { path: '$user', preserveNullAndEmptyArrays: true } },
+                { $project: { _id: 0, nickname: '$user.nickname', firstName: '$user.firstName', lastName: '$user.lastName', country: '$user.country' } },
+            ])
+        );
+        const data = rows.map((r: any) => {
+            const full = [r.firstName, r.lastName].filter(Boolean).join(' ').trim();
+            return { name: r.nickname || full || null, country: r.country || '' };
+        });
+        return res.status(200).json({ status: 'success', data });
+    } catch (error) {
+        if (isPoolDestroyedError(error)) {
+            return res.status(503).json({ status: 'error', message: 'Database connection is temporarily unavailable. Please try again.' });
+        }
+        next(error);
+    }
+};
+
 exports.getAlbumStatus = async (req: any, res: any, next: any) => {
     try {
         const mongoose = require('mongoose');
@@ -372,6 +411,13 @@ exports.getProductReaction = async (req: any, res: any, next: any) => {
     }
 };
 
+/**
+ * GET /engagement/product-reactions?user_id=&reaction=like
+ * `reaction` is optional (any of like/dislike/buy) -- omit for all of a
+ * user's reactions. When present, each row also carries a `product` snapshot
+ * (name/model/images/brandInfo) via a single batched Product lookup, so
+ * callers like History's "Liked" tab don't need N follow-up requests.
+ */
 exports.listProductReactions = async (req: any, res: any, next: any) => {
     try {
         const mongoose = require('mongoose');
@@ -379,8 +425,28 @@ exports.listProductReactions = async (req: any, res: any, next: any) => {
         if (!userId) {
             return res.status(400).json({ status: 'fail', message: 'user_id is required' });
         }
-        const docs = await runWithDbRetry(() => ProductReaction.find({ user_id: userId }).sort({ updatedAt: -1 }).lean());
-        return res.status(200).json({ status: 'success', data: docs });
+        const reaction = req.query?.reaction ? String(req.query.reaction) : null;
+        const query: any = { user_id: userId };
+        if (reaction) {
+            if (!['like', 'dislike', 'buy'].includes(reaction)) {
+                return res.status(400).json({ status: 'fail', message: 'reaction must be like, dislike, or buy' });
+            }
+            query.reaction = reaction;
+        }
+        const docs = await runWithDbRetry(() => ProductReaction.find(query).sort({ updatedAt: -1 }).lean());
+
+        const Product = require('../models/productModel');
+        const productIds = Array.from(new Set(docs.map((d: any) => String(d.product_id)).filter(Boolean)));
+        const products = productIds.length
+            ? await Product.find(
+                { _id: { $in: productIds } },
+                { name: 1, model: 1, images: 1, brandInfo: 1, pmc_code: 1, token_id: 1 }
+            ).lean()
+            : [];
+        const productById = new Map(products.map((p: any) => [String(p._id), p]));
+        const data = docs.map((d: any) => ({ ...d, product: productById.get(String(d.product_id)) || null }));
+
+        return res.status(200).json({ status: 'success', data });
     } catch (error) {
         if (isPoolDestroyedError(error)) {
             return res.status(503).json({ status: 'error', message: 'Database connection is temporarily unavailable. Please try again.' });
