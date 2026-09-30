@@ -63,13 +63,24 @@ const resolveRosterActor = async (req: any) => {
     return { company, canWrite: employee.employeeType === 'supervisor' };
 };
 
-const resolveInviteCompany = async (requester: any, domain: string) => {
+const resolveInviteCompany = async (requester: any, domain: string, companyId?: string) => {
     if (requester.role !== 'super') {
         return requester;
     }
+    // The super admin picks the company in the Add staff dialog; the email's
+    // domain is then checked against that company's domains by the caller.
+    if (companyId) {
+        const chosen = await Company.findOne({ _id: companyId, role: { $ne: 'super' } });
+        if (!chosen) {
+            const err: any = new Error('The selected company was not found.');
+            err.statusCode = 404;
+            throw err;
+        }
+        return chosen;
+    }
     const target = await Company.findOne({ role: { $ne: 'super' }, allowedEmailDomains: domain });
     if (!target) {
-        const err: any = new Error(`No registered company has ${domain} listed in its Allowed Staff Email Domains.`);
+        const err: any = new Error(`No registered company uses the domain ${domain}.`);
         err.statusCode = 400;
         throw err;
     }
@@ -114,7 +125,7 @@ exports.invite = async (req: any, res: any, next: any) => {
         const domain = emailDomain(email);
         let company: any;
         try {
-            company = await resolveInviteCompany(requester, domain);
+            company = await resolveInviteCompany(requester, domain, req.body?.company_id);
         } catch (err: any) {
             return res.status(err.statusCode || 400).json({ status: 'fail', message: err.message });
         }
@@ -122,7 +133,7 @@ exports.invite = async (req: any, res: any, next: any) => {
         if (!company.allowedEmailDomains || !company.allowedEmailDomains.includes(domain)) {
             return res.status(400).json({
                 status: 'fail',
-                message: `${domain} is not an allowed staff domain for this company. Add it to Allowed Staff Email Domains first.`
+                message: `${domain} is not this company's domain. Use an email ending in @${(company.allowedEmailDomains || [])[0] || 'the company domain'}, or add ${domain} to the company's domains first.`
             });
         }
 
