@@ -117,6 +117,15 @@ const companySchema = new mongoose.Schema({
         }],
         default: [{ entity: '', type: 'general' }]
     },
+    // The brand shown on this company's products: entered once here and
+    // used to fill in every new product (a product can still differ).
+    brand: {
+        name: { type: String, default: '' },
+        detail: { type: String, default: '' },
+        websiteUrl: { type: String, default: '' },
+        logoUrl: { type: String, default: '' },
+        coverUrl: { type: String, default: '' }
+    },
     // Look of this brand's shopper-facing product page (colours, font,
     // button shape, which sections show and in what order). Unset means the
     // Yometel defaults — always read through utils/dppTheme.normalizeDppTheme.

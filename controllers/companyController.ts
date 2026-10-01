@@ -189,6 +189,56 @@ const resolveProcessStepsActor = async (req: any) => {
     return { company, canWrite: employee.employeeType === 'supervisor' };
 };
 
+const BRAND_FIELDS = ['name', 'detail', 'websiteUrl', 'logoUrl', 'coverUrl'];
+const cleanBrand = (raw: any) => {
+    const brand: any = {};
+    BRAND_FIELDS.forEach((key) => { brand[key] = String(raw?.[key] ?? '').trim().slice(0, key === 'detail' ? 1000 : 500); });
+    return brand;
+};
+
+// The brand details new products start from. A company that has not saved
+// any yet gets the brand of its most recent product, so existing customers
+// do not have to type it in again.
+exports.getBrand = async (req: any, res: any, next: any) => {
+    try {
+        const { company } = await resolveProcessStepsActor(req);
+        if (!company) {
+            return next(new AppError(404, 'fail', 'No company found for this account'), req, res, next);
+        }
+        let brand = cleanBrand(company.brand);
+        let saved = BRAND_FIELDS.some((key) => brand[key]);
+        if (!saved) {
+            const latest = await Product.findOne({ company_id: company._id, is_deleted: { $ne: true }, 'brandInfo.name': { $gt: '' } })
+                .sort({ _id: -1 }).select('brandInfo').lean();
+            brand = latest ? cleanBrand(latest.brandInfo) : { ...brand, name: String(company.name || '').trim() };
+        }
+        res.status(200).json({ status: 'success', data: { brand, saved } });
+    } catch (error) {
+        next(error);
+    }
+};
+
+exports.updateBrand = async (req: any, res: any, next: any) => {
+    try {
+        const { company, canWrite } = await resolveProcessStepsActor(req);
+        if (!company) {
+            return next(new AppError(404, 'fail', 'No company found for this account'), req, res, next);
+        }
+        if (!canWrite) {
+            return next(new AppError(403, 'fail', 'Only a Supervisor or company admin may change the brand details'), req, res, next);
+        }
+        const brand = cleanBrand(req.body?.brand);
+        if (!brand.name) {
+            return next(new AppError(400, 'fail', 'Please enter the brand name'), req, res, next);
+        }
+        // updateOne, not save(): older company docs can fail unrelated validation.
+        await Company.updateOne({ _id: company._id }, { $set: { brand } });
+        res.status(200).json({ status: 'success', data: { brand, saved: true } });
+    } catch (error) {
+        next(error);
+    }
+};
+
 // The signed-in company's (or employee's company's) DPP theme.
 exports.getDppTheme = async (req: any, res: any, next: any) => {
     try {
