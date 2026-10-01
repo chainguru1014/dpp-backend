@@ -116,6 +116,13 @@ const companySchema = new mongoose.Schema({
             type: { type: String, trim: true, default: '' }
         }],
         default: [{ entity: '', type: 'general' }]
+    },
+    // Look of this brand's shopper-facing product page (colours, font,
+    // button shape, which sections show and in what order). Unset means the
+    // Yometel defaults — always read through utils/dppTheme.normalizeDppTheme.
+    dppTheme: {
+        type: mongoose.Schema.Types.Mixed,
+        default: undefined
     }
 });
 

@@ -11,6 +11,7 @@ const { formatTerminalId } = require('../utils/idFormat');
 const qrcode = require('qrcode');
 const QRcode = require('../models/qrcodeModel');
 const mongoose = require("mongoose");
+const { normalizeDppTheme } = require("../utils/dppTheme");
 
 // Fixed set of process-step "type" categories — the mobile app translates
 // each key via i18n instead of displaying admin-entered free text, so the
@@ -181,6 +182,52 @@ const resolveProcessStepsActor = async (req: any) => {
     }
     const company = await Company.findById(employee.company_id);
     return { company, canWrite: employee.employeeType === 'supervisor' };
+};
+
+// The signed-in company's (or employee's company's) DPP theme.
+exports.getDppTheme = async (req: any, res: any, next: any) => {
+    try {
+        const { company } = await resolveProcessStepsActor(req);
+        if (!company) {
+            return next(new AppError(404, 'fail', 'No company found for this account'), req, res, next);
+        }
+        res.status(200).json({ status: 'success', data: { dppTheme: normalizeDppTheme(company.dppTheme) } });
+    } catch (error) {
+        next(error);
+    }
+};
+
+exports.updateDppTheme = async (req: any, res: any, next: any) => {
+    try {
+        const { company, canWrite } = await resolveProcessStepsActor(req);
+        if (!company) {
+            return next(new AppError(404, 'fail', 'No company found for this account'), req, res, next);
+        }
+        if (!canWrite) {
+            return next(new AppError(403, 'fail', 'Only a Supervisor or company admin may change the product page design'), req, res, next);
+        }
+        const dppTheme = normalizeDppTheme(req.body?.dppTheme);
+        // updateOne, not save(): older company docs can fail unrelated validation.
+        await Company.updateOne({ _id: company._id }, { $set: { dppTheme } });
+        res.status(200).json({ status: 'success', data: { dppTheme } });
+    } catch (error) {
+        next(error);
+    }
+};
+
+// Public: the theme the shopper's product page should use for one brand.
+// Only the design is returned, never anything else about the company.
+exports.getPublicDppTheme = async (req: any, res: any, next: any) => {
+    try {
+        const mongoose = require('mongoose');
+        const id = String(req.params.id || '');
+        const company = mongoose.Types.ObjectId.isValid(id)
+            ? await Company.findById(id).select('dppTheme').lean()
+            : null;
+        res.status(200).json({ status: 'success', data: { dppTheme: normalizeDppTheme(company?.dppTheme) } });
+    } catch (error) {
+        next(error);
+    }
 };
 
 exports.getProcessSteps = async (req: any, res: any, next: any) => {

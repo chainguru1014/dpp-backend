@@ -14,6 +14,9 @@ router.get('/products',CompanyController.getProductsByCompanyId);
 // "process-steps" as an :id value instead of this literal path.
 router.get('/process-steps', protect, restrictTo('Company', 'Employee'), CompanyController.getProcessSteps);
 router.put('/process-steps', protect, restrictTo('Company', 'Employee'), CompanyController.updateProcessSteps);
+router.get('/dpp-theme', protect, restrictTo('Company', 'Employee'), CompanyController.getDppTheme);
+router.put('/dpp-theme', protect, restrictTo('Company', 'Employee'), CompanyController.updateDppTheme);
+router.get('/:id/dpp-theme', CompanyController.getPublicDppTheme);
 router.get('/:id', CompanyController.getCompany);
 router.post('/', CompanyController.addCompany);
 router.put('/:id', CompanyController.updateCompany);
