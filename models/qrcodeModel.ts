@@ -16,6 +16,20 @@ const qrcodeSchema = new mongoose.Schema({
     parent_qrcode_id:{
         type:Number,
         default:-1
+    },
+    // Set by the brand when this label looks like a copy (Security page).
+    // The product page still opens, but warns the shopper.
+    blocked: {
+        type: Boolean,
+        default: false
+    },
+    blockedNote: {
+        type: String,
+        default: ''
+    },
+    blockedAt: {
+        type: Date,
+        default: null
     }
 });
 

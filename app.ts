@@ -26,6 +26,7 @@ const captureRoutes = require('./routes/captureRoutes');
 const rfidRoutes = require('./routes/rfidRoutes');
 const platformSettingsRoutes = require('./routes/platformSettingsRoutes');
 const traceRoutes = require('./routes/traceRoutes');
+const securityRoutes = require('./routes/securityRoutes');
 const globalErrHandler = require('./controllers/errorController');
 const AppError = require('./utils/appError');
 
@@ -94,6 +95,7 @@ app.use('/captures', captureRoutes);
 app.use('/rfid', rfidRoutes);
 app.use('/platform-settings', platformSettingsRoutes);
 app.use('/trace', traceRoutes);
+app.use('/security', securityRoutes);
 app.use('/', aiRoutes);
 
 // Serve product web page for URL-format QR codes:

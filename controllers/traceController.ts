@@ -1,6 +1,4 @@
 const mongoose = require('mongoose');
-const Company = require('../models/companyModel');
-const Employee = require('../models/employeeModel');
 const Product = require('../models/productModel');
 const QRcode = require('../models/qrcodeModel');
 const Serials = require('../models/serialModal');
@@ -13,6 +11,7 @@ const OwnershipTransfer = require('../models/ownershipTransferModel');
 const AppError = require('../utils/appError');
 const { extractProductFromQrUrl } = require('../utils/publicUrl');
 const { parseGs1 } = require('../utils/gs1');
+const { resolveCompanyScope } = require('../utils/companyScope');
 
 // "Find an item": one search box that accepts whatever is printed on or
 // stored in a product — its passport ID (PMC), the QR code's link, a serial,
@@ -23,22 +22,6 @@ const { parseGs1 } = require('../utils/gs1');
 
 const EVENT_LIMIT = 300;
 const escapeRegex = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-
-// Which company's products the requester may see. null = every company
-// (the platform super admin).
-const resolveScope = async (req: any) => {
-    if (req.user.actorKind === 'Company') {
-        const company = await Company.findById(req.user.id).select('role');
-        if (!company) return { allowed: false, companyId: null };
-        return { allowed: true, companyId: company.role === 'super' ? null : company._id };
-    }
-    if (req.user.actorKind === 'Employee') {
-        const employee = await Employee.findById(req.user.id).select('company_id');
-        if (!employee) return { allowed: false, companyId: null };
-        return { allowed: true, companyId: employee.company_id };
-    }
-    return { allowed: false, companyId: null };
-};
 
 const productSummary = (product: any) => ({
     _id: product._id,
@@ -131,9 +114,10 @@ const buildTimeline = async (product: any, qrcodeId: number | null, pmc: any) =>
 };
 
 const itemResult = async (product: any, qrcodeId: number, matchedBy: string) => {
-    const [pmc, serials] = await Promise.all([
+    const [pmc, serials, code] = await Promise.all([
         PMC.findOne({ product_id: product._id, qrcode_id: qrcodeId }).lean(),
-        Serials.find({ product_id: product._id, qrcode_id: qrcodeId }).select('type serial').lean()
+        Serials.find({ product_id: product._id, qrcode_id: qrcodeId }).select('type serial').lean(),
+        QRcode.findOne({ product_id: product._id, qrcode_id: qrcodeId }).select('blocked blockedNote').lean()
     ]);
     const identifiers = pmc
         ? await PmcIdentifier.find({ pmc_id: pmc._id }).sort({ createdAt: 1 }).select('source_type raw_value').lean()
@@ -145,6 +129,8 @@ const itemResult = async (product: any, qrcodeId: number, matchedBy: string) => 
         item: {
             qrcodeId,
             pmcCode: pmc?.pmc_code || '',
+            blocked: !!code?.blocked,
+            blockedNote: code?.blockedNote || '',
             identifiers: identifiers.map((i: any) => ({ type: i.source_type, value: i.raw_value })),
             serials: serials.map((s: any) => ({ type: s.type, value: s.serial }))
         },
@@ -162,7 +148,7 @@ const productResult = async (product: any, matchedBy: string) => ({
 // GET /trace/search?q=
 exports.search = async (req: any, res: any, next: any) => {
     try {
-        const scope = await resolveScope(req);
+        const scope = await resolveCompanyScope(req);
         if (!scope.allowed) {
             return next(new AppError(403, 'fail', 'You do not have permission to search items'), req, res, next);
         }
@@ -249,7 +235,7 @@ exports.search = async (req: any, res: any, next: any) => {
 // product's list of codes, or a product result's timeline).
 exports.getItem = async (req: any, res: any, next: any) => {
     try {
-        const scope = await resolveScope(req);
+        const scope = await resolveCompanyScope(req);
         if (!scope.allowed) {
             return next(new AppError(403, 'fail', 'You do not have permission to view items'), req, res, next);
         }
@@ -274,7 +260,7 @@ exports.getItem = async (req: any, res: any, next: any) => {
 // GET /trace/product/:productId — a product's latest events across all its items.
 exports.getProduct = async (req: any, res: any, next: any) => {
     try {
-        const scope = await resolveScope(req);
+        const scope = await resolveCompanyScope(req);
         if (!scope.allowed) {
             return next(new AppError(403, 'fail', 'You do not have permission to view items'), req, res, next);
         }

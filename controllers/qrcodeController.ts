@@ -103,7 +103,9 @@ const getPublicProductPayload = async (productId: any, qrcodeId: any) => {
         qrcode_img: qrcodeImage,
         serialInfos: serials,
         scannedQRCode,
-        pmc_code
+        pmc_code,
+        // 'blocked' = the brand marked this label as a suspected copy.
+        item_status: qrcodeData.blocked ? 'blocked' : 'ok'
     };
 };
 
