@@ -12,6 +12,7 @@ const { resolvePmc } = require('../services/pmcService');
 const ScanRecord = require('../models/scanRecordModel');
 const ProductHolding = require('../models/productHoldingModel');
 const { createNotification } = require('./notificationController');
+const { resolveCompanyScope } = require('../utils/companyScope');
 
 /**
  * Fire-and-forget "Lifecycle updated" notification to every app user who has
@@ -303,6 +304,134 @@ exports.addProduct = async(req: any, res: any, next: any) => {
     }
 };
 
+
+const BULK_IMPORT_MAX_ROWS = 500;
+// Fields a spreadsheet row may set. Anything else in a row is ignored, so an
+// import can never touch codes, counters, ownership or the company.
+const BULK_IMPORT_FIELDS = [
+    'name', 'model', 'aboutProduct', 'productType', 'color', 'size', 'manufactureDate',
+    'itemCategory', 'skuStyleNumber', 'warrantyStatus', 'warrantyValidYears',
+    'brandInfo', 'images', 'materialSize', 'certifications', 'disposal', 'traceabilityEsg'
+];
+
+/**
+ * POST /product/bulk-import { rows: [...] }
+ * Creates or updates many products from a spreadsheet (the admin panel
+ * parses the CSV and sends one object per row). A row with `_id` updates
+ * that product — only the fields the row carries; any other row creates a
+ * new product. Each row succeeds or fails on its own, and the response says
+ * which rows failed and why.
+ */
+exports.bulkImport = async (req: any, res: any, next: any) => {
+    try {
+        const scope = await resolveCompanyScope(req);
+        if (!scope.allowed || !scope.canWrite) {
+            return next(new AppError(403, 'fail', 'Only a Supervisor or company admin may import products'), req, res, next);
+        }
+        // The super admin imports into its own company, like the product form does.
+        const companyId = scope.companyId || req.user.id;
+        const rows = Array.isArray(req.body?.rows) ? req.body.rows : null;
+        if (!rows || rows.length === 0) {
+            return next(new AppError(400, 'fail', 'There are no rows to import'), req, res, next);
+        }
+        if (rows.length > BULK_IMPORT_MAX_ROWS) {
+            return next(new AppError(400, 'fail', `Import at most ${BULK_IMPORT_MAX_ROWS} products at a time`), req, res, next);
+        }
+
+        // A new product needs brand details; rows that leave them out reuse
+        // the ones on this company's most recent product.
+        const latest = await Product.findOne({ company_id: companyId, is_deleted: { $ne: true } }).sort({ _id: -1 }).select('brandInfo').lean();
+        const defaultBrand = latest?.brandInfo || {};
+
+        let created = 0;
+        let updated = 0;
+        const errors: { row: number; name: string; message: string }[] = [];
+
+        for (let i = 0; i < rows.length; i++) {
+            const raw = rows[i] || {};
+            const rowNumber = Number(raw.__row) || i + 1;
+            const body: any = {};
+            BULK_IMPORT_FIELDS.forEach((key) => {
+                if (raw[key] !== undefined && raw[key] !== null) body[key] = raw[key];
+            });
+            const fail = (message: string) => errors.push({ row: rowNumber, name: String(raw.name || ''), message });
+
+            try {
+                const id = String(raw._id || '').trim();
+                if (id) {
+                    const mongoose = require('mongoose');
+                    const existing = mongoose.Types.ObjectId.isValid(id)
+                        ? await Product.findOne({ _id: id, company_id: companyId, is_deleted: { $ne: true } })
+                        : null;
+                    if (!existing) {
+                        fail('No product of yours has this id. Clear the id column to add it as a new product.');
+                        continue;
+                    }
+                    if (body.name !== undefined && !String(body.name).trim()) {
+                        fail('The product name cannot be empty.');
+                        continue;
+                    }
+                    // Nested groups are merged, so a row that only gives a
+                    // brand name does not wipe the logo, and so on.
+                    ['brandInfo', 'disposal', 'traceabilityEsg', 'materialSize'].forEach((group) => {
+                        if (body[group]) body[group] = { ...(existing.toObject()[group] || {}), ...body[group] };
+                    });
+                    // Lists are replaced by the row's list, but an entry that
+                    // already exists keeps what a spreadsheet cannot carry
+                    // (its icon, certificate file, "required" tick...).
+                    const keepExtras = (incoming: any[], current: any[], key: string) => incoming.map((item: any) => {
+                        const match = (current || []).find((c: any) => c && typeof c === 'object'
+                            && String(c[key] || '').trim().toLowerCase() === String(item[key] || '').trim().toLowerCase());
+                        return match ? { ...(match.toObject ? match.toObject() : match), ...item } : item;
+                    });
+                    if (Array.isArray(body.materialSize?.materials)) {
+                        body.materialSize.materials = keepExtras(body.materialSize.materials, existing.materialSize?.materials, 'material');
+                    }
+                    if (Array.isArray(body.certifications)) {
+                        body.certifications = keepExtras(body.certifications, existing.certifications, 'title');
+                    }
+                    const categoryError = await applyItemCategory(body, { isCreate: false, currentCategory: existing.itemCategory });
+                    if (categoryError) {
+                        fail(categoryError);
+                        continue;
+                    }
+                    const doc = await Product.findByIdAndUpdate(existing._id, { $set: body }, { new: true, runValidators: true });
+                    notifyLifecycleUpdated(doc);
+                    updated++;
+                    continue;
+                }
+
+                if (!String(body.name || '').trim()) {
+                    fail('The product name is missing.');
+                    continue;
+                }
+                body.brandInfo = { ...defaultBrand, ...(body.brandInfo || {}) };
+                const missingBrand = ['name', 'detail', 'websiteUrl', 'logoUrl'].filter((key) => !String(body.brandInfo[key] || '').trim());
+                if (missingBrand.length) {
+                    fail(`Brand details are missing (${missingBrand.join(', ')}). Fill the brand columns, or add one product by hand first so its brand can be reused.`);
+                    continue;
+                }
+                const categoryError = await applyItemCategory(body, { isCreate: true });
+                if (categoryError) {
+                    fail(categoryError);
+                    continue;
+                }
+                if (await Product.findOne({ company_id: companyId, name: body.name, model: body.model || '', is_deleted: { $ne: true } }).select('_id').lean()) {
+                    fail('A product with this name and model already exists. To change it, export your products and import the row with its id.');
+                    continue;
+                }
+                await Product.create({ ...body, company_id: companyId, total_minted_amount: 0 });
+                created++;
+            } catch (error: any) {
+                fail(error?.message || 'This row could not be saved.');
+            }
+        }
+
+        res.status(200).json({ status: 'success', data: { created, updated, errors } });
+    } catch (error) {
+        next(error);
+    }
+};
 
 async function mintChildProduct(product_id:string,qrcode_id:number) {
     const products = await Product.find({parent:product_id})

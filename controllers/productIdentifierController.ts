@@ -6,6 +6,8 @@ const AppError = require('../utils/appError');
 const { SOURCE_TYPES } = require('../utils/pmcConstants');
 const { parseGs1 } = require('../utils/gs1');
 const { resolvePmc } = require('../services/pmcService');
+const QRcode = require('../models/qrcodeModel');
+const { resolveCompanyScope } = require('../utils/companyScope');
 
 // Admin registers a barcode/GTIN (or an NFC/RFID tag ID) against a product
 // ahead of time, so a later scan of that identifier — by anyone, not just
@@ -114,6 +116,96 @@ exports.bulkRegister = async (req: any, res: any, next: any) => {
         }
 
         res.status(200).json({ status: 'success', data: { inserted, skipped, errors } });
+    } catch (error) {
+        next(error);
+    }
+};
+
+const PAIR_MAX_ROWS = 2000;
+
+/**
+ * POST /product-identifier/pair { product_id, source_type, pairs: [{ qrcode_id, raw_value }] }
+ * Ties a physical tag (RFID / NFC / barcode) to one specific item, so the
+ * tag and the item's QR code lead to the same passport and history. Each
+ * pair succeeds or fails on its own; a tag already tied to a different item
+ * is reported, never silently moved.
+ */
+exports.pair = async (req: any, res: any, next: any) => {
+    try {
+        const scope = await resolveCompanyScope(req);
+        if (!scope.allowed) {
+            return next(new AppError(403, 'fail', 'You do not have permission to pair tags'));
+        }
+        const { product_id, source_type, pairs } = req.body || {};
+        if (!['rfid', 'nfc', 'barcode'].includes(source_type)) {
+            return next(new AppError(400, 'fail', 'source_type must be rfid, nfc or barcode'));
+        }
+        if (!Array.isArray(pairs) || pairs.length === 0) {
+            return next(new AppError(400, 'fail', 'There are no tags to pair'));
+        }
+        if (pairs.length > PAIR_MAX_ROWS) {
+            return next(new AppError(400, 'fail', `Pair at most ${PAIR_MAX_ROWS} tags at a time`));
+        }
+        const product = await Product.findOne({ _id: product_id, is_deleted: { $ne: true } }).select('company_id');
+        if (!product || (scope.companyId && String(product.company_id) !== String(scope.companyId))) {
+            return next(new AppError(404, 'fail', 'Product not found'));
+        }
+        const companyId = product.company_id;
+
+        let paired = 0;
+        let unchanged = 0;
+        const errors: { qrcode_id: any; raw_value: string; message: string }[] = [];
+
+        for (const row of pairs) {
+            const rawValue = String(row?.raw_value || '').trim();
+            const qrcodeId = Number(row?.qrcode_id);
+            const fail = (message: string) => errors.push({ qrcode_id: row?.qrcode_id, raw_value: rawValue, message });
+            if (!rawValue || !Number.isInteger(qrcodeId) || qrcodeId < 1) {
+                fail('Needs an item number and a tag ID.');
+                continue;
+            }
+            try {
+                if (!(await QRcode.exists({ product_id: product._id, qrcode_id: qrcodeId }))) {
+                    fail(`Item #${qrcodeId} does not exist. Create the QR codes first.`);
+                    continue;
+                }
+                // Already used somewhere? resolvePmc would quietly return the
+                // other item's passport, so check before calling it.
+                const existing = await PmcIdentifier.findOne({ raw_value: rawValue });
+                if (existing) {
+                    const owner = await PMC.findById(existing.pmc_id).select('product_id qrcode_id').lean();
+                    if (owner && String(owner.product_id) === String(product._id) && owner.qrcode_id === qrcodeId) {
+                        unchanged++;
+                    } else {
+                        fail(owner && String(owner.product_id) === String(product._id) && owner.qrcode_id != null
+                            ? `This tag is already paired with item #${owner.qrcode_id}.`
+                            : 'This tag is already registered to a product. Remove it there first.');
+                    }
+                    continue;
+                }
+                const mapping = await ProductIdentifier.findOne({ raw_value: rawValue }).select('product_id').lean();
+                if (mapping && String(mapping.product_id) !== String(product._id)) {
+                    fail('This tag is already registered to another product.');
+                    continue;
+                }
+                if (!mapping) {
+                    await ProductIdentifier.create({
+                        product_id: product._id,
+                        company_id: companyId,
+                        source_type,
+                        raw_value: rawValue,
+                        gtin: parseGs1(rawValue)?.gtin || '',
+                        note: `Item #${qrcodeId}`
+                    });
+                }
+                await resolvePmc({ product_id: product._id, company_id: companyId, source_type, raw_value: rawValue, qrcode_id: qrcodeId });
+                paired++;
+            } catch (error: any) {
+                fail(error?.code === 11000 ? 'This tag is already registered.' : (error?.message || 'This tag could not be paired.'));
+            }
+        }
+
+        res.status(200).json({ status: 'success', data: { paired, unchanged, errors } });
     } catch (error) {
         next(error);
     }
