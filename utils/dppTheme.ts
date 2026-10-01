@@ -4,7 +4,7 @@
 // defaults and the same clean-up, so a theme saved here always renders.
 
 // One per tab of the app's Product Lifecycle screen, in its default order.
-const DPP_SECTION_KEYS = ['journey', 'care', 'materials', 'dispose', 'traceability'];
+const DPP_SECTION_KEYS = ['journey', 'care', 'materials', 'dispose', 'traceability', 'compliance'];
 const DPP_FONT_KEYS = ['system', 'serif', 'rounded', 'mono'];
 
 const DEFAULT_DPP_THEME = {
