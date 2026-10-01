@@ -5,6 +5,7 @@ const { emailDomain, hashEmail } = require('../utils/pii');
 const { appendAuditLog } = require('../utils/employeeAuditLog');
 const { getNextSequence } = require('../models/counterModel');
 const { formatTerminalId } = require('../utils/idFormat');
+const { sendWelcomeEmail } = require('../utils/welcomeEmail');
 
 const buildEmployeeResponse = (employee: any) => ({
     _id: employee._id,
@@ -180,6 +181,14 @@ exports.invite = async (req: any, res: any, next: any) => {
         }
 
         await appendAuditLog(employee._id, isNew ? 'provisioned' : 'updated', { role, employeeType, by: String(req.user.id) }, req.ip);
+
+        // A newly added person is told they have an account and how to sign
+        // in. Not awaited: SMTP can take minutes, and a failed email must not
+        // undo the account.
+        if (isNew) {
+            sendWelcomeEmail({ to: email, name: employee.name, companyName: company.name, employeeType })
+                .catch((err: any) => console.error('Welcome email failed:', err));
+        }
 
         return res.status(200).json({ status: 'success', data: buildEmployeeResponse(employee) });
     } catch (error: any) {

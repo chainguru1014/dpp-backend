@@ -12,6 +12,7 @@ const qrcode = require('qrcode');
 const QRcode = require('../models/qrcodeModel');
 const mongoose = require("mongoose");
 const { normalizeDppTheme } = require("../utils/dppTheme");
+const { sendWelcomeEmail } = require('../utils/welcomeEmail');
 
 // Fixed set of process-step "type" categories — the mobile app translates
 // each key via i18n instead of displaying admin-entered free text, so the
@@ -70,6 +71,10 @@ const ensureDefaultSupervisor = async (company: any, rawEmailInput: any) => {
     } else {
         await Employee.create(fields);
     }
+    // Tell them they have an account and how to sign in. Not awaited: SMTP can
+    // take minutes, and a failed email must not undo the account.
+    sendWelcomeEmail({ to: rawEmail, name: existing?.name, companyName: company.name, employeeType: 'supervisor' })
+        .catch((err: any) => console.error('Welcome email failed:', err));
     return '';
 };
 
