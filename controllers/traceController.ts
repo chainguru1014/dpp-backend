@@ -12,6 +12,7 @@ const AppError = require('../utils/appError');
 const { extractProductFromQrUrl } = require('../utils/publicUrl');
 const { parseGs1 } = require('../utils/gs1');
 const { resolveCompanyScope } = require('../utils/companyScope');
+const { buildProductLifecycle } = require('../utils/productLifecycle');
 
 // "Find an item": one search box that accepts whatever is printed on or
 // stored in a product — its passport ID (PMC), the QR code's link, a serial,
@@ -134,6 +135,9 @@ const itemResult = async (product: any, qrcodeId: number, matchedBy: string) => 
             identifiers: identifiers.map((i: any) => ({ type: i.source_type, value: i.raw_value })),
             serials: serials.map((s: any) => ({ type: s.type, value: s.serial }))
         },
+        // What the brand entered for the product: where its materials come
+        // from, where it was made and how it was shipped, with coordinates.
+        lifecycle: await buildProductLifecycle(product),
         timeline: await buildTimeline(product, qrcodeId, pmc)
     };
 };
@@ -142,6 +146,7 @@ const productResult = async (product: any, matchedBy: string) => ({
     type: 'product',
     matchedBy,
     product: productSummary(product),
+    lifecycle: await buildProductLifecycle(product),
     timeline: await buildTimeline(product, null, null)
 });
 
