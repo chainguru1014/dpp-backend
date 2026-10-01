@@ -64,6 +64,17 @@ const productSchema = new mongoose.Schema({
         type: String,
         default: ''
     },
+    // GS1 product number (GTIN), stored as 14 digits. With it every item
+    // also has a GS1 Digital Link (/01/<GTIN>/21/<item number>);
+    // gs1DigitalLink makes new QR codes carry that link instead of ours.
+    gtin: {
+        type: String,
+        default: ''
+    },
+    gs1DigitalLink: {
+        type: Boolean,
+        default: false
+    },
     brandInfo: {
         name: {
             type: String,

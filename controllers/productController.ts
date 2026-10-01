@@ -63,6 +63,30 @@ const delay = (ms : any) => new Promise(resolve => setTimeout(resolve, ms))
 // each carries the SKU/style-number prefix, e.g. "DNM-2501-01".
 const { getItemCategories, FALLBACK_CATEGORY_KEY } = require('../utils/itemCategories');
 
+const { normalizeGtin, isValidGtin } = require('../utils/gs1');
+
+// Checks and normalizes body.gtin (when the request carries one). A GTIN
+// names exactly one product, so it cannot be reused. Returns an error
+// message, or '' when OK.
+const applyGtin = async (body: any, currentId?: any) => {
+    if (body.gtin === undefined || body.gtin === null) return '';
+    const raw = String(body.gtin).trim();
+    if (!raw) {
+        body.gtin = '';
+        body.gs1DigitalLink = false;
+        return '';
+    }
+    if (!isValidGtin(raw)) {
+        return `"${raw}" is not a valid GTIN. It has 8, 12, 13 or 14 digits and the last one is a check digit.`;
+    }
+    body.gtin = normalizeGtin(raw);
+    const taken = await Product.findOne({ gtin: body.gtin, is_deleted: { $ne: true }, ...(currentId ? { _id: { $ne: currentId } } : {}) }).select('name').lean();
+    if (taken) {
+        return `GTIN ${raw} is already used by "${taken.name}".`;
+    }
+    return '';
+};
+
 function randomSkuStyleNumber(prefix: string) {
     const yymm = String(Math.floor(2401 + Math.random() * 700)); // e.g. 2501-2601-ish spread
     const seq = String(Math.floor(1 + Math.random() * 99)).padStart(2, '0');
@@ -215,6 +239,10 @@ exports.updateProduct = async(req: any, res: any, next: any) => {
         if (categoryError) {
             return next(new AppError(400, 'fail', categoryError), req, res, next);
         }
+        const gtinError = await applyGtin(req.body, product._id);
+        if (gtinError) {
+            return next(new AppError(400, 'fail', gtinError), req, res, next);
+        }
 
         const doc = await Product.findByIdAndUpdate(req.params.id, req.body, {
             new: true,
@@ -282,6 +310,10 @@ exports.addProduct = async(req: any, res: any, next: any) => {
         if (categoryError) {
             return next(new AppError(400, 'fail', categoryError), req, res, next);
         }
+        const gtinError = await applyGtin(product);
+        if (gtinError) {
+            return next(new AppError(400, 'fail', gtinError), req, res, next);
+        }
 
         console.log(product);
         const data = await Product.findOne({ name: product.name, detail: product.detail });
@@ -310,7 +342,7 @@ const BULK_IMPORT_MAX_ROWS = 500;
 // import can never touch codes, counters, ownership or the company.
 const BULK_IMPORT_FIELDS = [
     'name', 'model', 'aboutProduct', 'productType', 'color', 'size', 'manufactureDate',
-    'itemCategory', 'skuStyleNumber', 'warrantyStatus', 'warrantyValidYears',
+    'itemCategory', 'skuStyleNumber', 'gtin', 'warrantyStatus', 'warrantyValidYears',
     'brandInfo', 'images', 'materialSize', 'certifications', 'disposal', 'traceabilityEsg'
 ];
 
@@ -395,6 +427,11 @@ exports.bulkImport = async (req: any, res: any, next: any) => {
                         fail(categoryError);
                         continue;
                     }
+                    const gtinError = await applyGtin(body, existing._id);
+                    if (gtinError) {
+                        fail(gtinError);
+                        continue;
+                    }
                     const doc = await Product.findByIdAndUpdate(existing._id, { $set: body }, { new: true, runValidators: true });
                     notifyLifecycleUpdated(doc);
                     updated++;
@@ -414,6 +451,11 @@ exports.bulkImport = async (req: any, res: any, next: any) => {
                 const categoryError = await applyItemCategory(body, { isCreate: true });
                 if (categoryError) {
                     fail(categoryError);
+                    continue;
+                }
+                const gtinError = await applyGtin(body);
+                if (gtinError) {
+                    fail(gtinError);
                     continue;
                 }
                 if (await Product.findOne({ company_id: companyId, name: body.name, model: body.model || '', is_deleted: { $ne: true } }).select('_id').lean()) {

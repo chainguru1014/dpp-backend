@@ -4,6 +4,12 @@ const buildPublicProductUrl = (productId: any, qrCodeId: any) => {
     return `${PUBLIC_APP_URL}/product/${encodeURIComponent(String(productId))}/${encodeURIComponent(String(qrCodeId))}`;
 };
 
+// The same item as a GS1 Digital Link: /01/<GTIN>/21/<serial>. The serial is
+// the item's number within its product, so GTIN + serial names one item.
+const buildDigitalLinkUrl = (gtin: any, qrCodeId: any) => {
+    return `${PUBLIC_APP_URL}/01/${encodeURIComponent(String(gtin))}/21/${encodeURIComponent(String(qrCodeId))}`;
+};
+
 const extractProductFromQrUrl = (qrUrl: string) => {
     if (!qrUrl || typeof qrUrl !== 'string') {
         return null;
@@ -37,4 +43,4 @@ const extractProductFromQrUrl = (qrUrl: string) => {
     return { productId, qrcodeId };
 };
 
-module.exports = { PUBLIC_APP_URL, buildPublicProductUrl, extractProductFromQrUrl };
+module.exports = { PUBLIC_APP_URL, buildPublicProductUrl, buildDigitalLinkUrl, extractProductFromQrUrl };

@@ -77,4 +77,14 @@ const parseGs1 = (rawValue: string) => {
     return parseDigitalLinkUrl(value) || parseBracketedElementString(value) || parsePlainGtin(value);
 };
 
-module.exports = { parseGs1 };
+// True when the last digit is the correct GS1 check digit for the rest
+// (weights 3,1,3,1... from the right) — catches typing mistakes in a GTIN.
+const isValidGtin = (raw: string) => {
+    const digits = String(raw || '').replace(/\D/g, '');
+    if (![8, 12, 13, 14].includes(digits.length)) return false;
+    const body = digits.slice(0, -1).split('').reverse();
+    const sum = body.reduce((total, d, i) => total + Number(d) * (i % 2 === 0 ? 3 : 1), 0);
+    return (10 - (sum % 10)) % 10 === Number(digits[digits.length - 1]);
+};
+
+module.exports = { parseGs1, normalizeGtin, isValidGtin };

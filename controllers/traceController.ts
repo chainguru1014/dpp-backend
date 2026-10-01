@@ -207,8 +207,22 @@ exports.search = async (req: any, res: any, next: any) => {
             if (product) return send(await itemResult(product, serial.qrcode_id, 'Serial number'));
         }
 
-        // 5. A code registered to a product (tag ID or barcode), or its GTIN.
-        const gtin = parseGs1(q)?.gtin || '';
+        // 5. A GS1 Digital Link or GTIN of one of our own products.
+        const gs1 = parseGs1(q);
+        if (gs1?.gtin) {
+            const own = await Product.findOne({ gtin: gs1.gtin, is_deleted: { $ne: true } }).select('_id').lean();
+            const product = own ? await loadProduct(own._id) : null;
+            if (product) {
+                const serial = /^\d+$/.test(String(gs1.serial || '')) ? Number(gs1.serial) : null;
+                if (serial != null && await QRcode.exists({ product_id: product._id, qrcode_id: serial })) {
+                    return send(await itemResult(product, serial, 'GS1 Digital Link'));
+                }
+                return send(await productResult(product, 'GTIN'));
+            }
+        }
+
+        // 6. A code registered to a product (tag ID or barcode), or its GTIN.
+        const gtin = gs1?.gtin || '';
         const registered = await ProductIdentifier.findOne({
             $or: [{ raw_value: q }, ...(gtin ? [{ gtin }] : [])]
         }).lean();
@@ -219,7 +233,7 @@ exports.search = async (req: any, res: any, next: any) => {
             }
         }
 
-        // 6. Part of a product name, model or style number.
+        // 7. Part of a product name, model or style number.
         const text = { $regex: escapeRegex(q), $options: 'i' };
         const filter: any = { is_deleted: { $ne: true }, $or: [{ name: text }, { model: text }, { skuStyleNumber: text }] };
         if (scope.companyId) filter.company_id = scope.companyId;

@@ -14,7 +14,8 @@ const { encrypt, decrypt } = require('../utils/helper');
 const { getOwnedProductIds } = require('../utils/ownership');
 const qrcode = require('qrcode');
 const mongoose = require('mongoose');
-const { buildPublicProductUrl, extractProductFromQrUrl } = require('../utils/publicUrl');
+const { buildPublicProductUrl, buildDigitalLinkUrl, extractProductFromQrUrl } = require('../utils/publicUrl');
+const { parseGs1 } = require('../utils/gs1');
 const { normalizeProductMedia } = require('../utils/productMedia');
 const { resolvePmc } = require('../services/pmcService');
 const { geolocateIp, reverseGeocode } = require('../utils/geoLocate');
@@ -37,6 +38,21 @@ const resolveOwnerProductMatch = async (req: any) => {
 };
 
 const divcount = 20000;
+
+// Which of our items a scanned value names: our own /product/:id/:n link, or
+// a GS1 Digital Link (/01/<GTIN>/21/<serial>) whose GTIN belongs to one of
+// our products and whose serial is that product's item number. Returns
+// { productId, qrcodeId } or null (e.g. another company's GS1 link, which
+// the registered-identifier lookup handles instead).
+const resolveItemFromScan = async (value: string) => {
+    const direct = extractProductFromQrUrl(value);
+    if (direct) return direct;
+    const gs1 = parseGs1(value);
+    if (!gs1?.gtin || !/^\d+$/.test(String(gs1.serial || ''))) return null;
+    const product = await Product.findOne({ gtin: gs1.gtin, is_deleted: { $ne: true } }).select('_id').lean();
+    if (!product) return null;
+    return { productId: String(product._id), qrcodeId: Number(gs1.serial) };
+};
 
 const getPublicProductPayload = async (productId: any, qrcodeId: any) => {
     const numericQrId = Number(qrcodeId);
@@ -155,7 +171,10 @@ exports.getQRcodesWithProductId = async(req: any, res: any, next: any) => {
             }).sort({ qrcode_id: 1 });
             data = existing.map((doc: any) => ({
                 qrcode_id: doc.qrcode_id,
-                url: buildPublicProductUrl(product._id, doc.qrcode_id)
+                // Printed as a GS1 Digital Link when the product asks for it.
+                url: product.gs1DigitalLink && product.gtin
+                    ? buildDigitalLinkUrl(product.gtin, doc.qrcode_id)
+                    : buildPublicProductUrl(product._id, doc.qrcode_id)
             }));
         }
 
@@ -210,7 +229,7 @@ exports.decrypt = async (req: any, res: any, next: any) => {
 
         // Backward-compatible support:
         // If URL-format QR value is sent to /decrypt, resolve it as product QR URL.
-        const parsedFromUrl = extractProductFromQrUrl(rawValue);
+        const parsedFromUrl = await resolveItemFromScan(rawValue);
         if (parsedFromUrl) {
             const payload = await getPublicProductPayload(parsedFromUrl.productId, parsedFromUrl.qrcodeId);
             if (!payload) {
@@ -1327,6 +1346,20 @@ exports.getPublicProductByIds = async (req: any, res: any, next: any) => {
     }
 };
 
+// Public product endpoint for GS1 Digital Links: /01/:gtin/21/:serial
+exports.getPublicProductByGs1 = async (req: any, res: any, next: any) => {
+    try {
+        const item = await resolveItemFromScan(`https://id.gs1.org/01/${req.params.gtin}/21/${req.params.serial}`);
+        const payload = item ? await getPublicProductPayload(item.productId, item.qrcodeId) : null;
+        if (!payload) {
+            return res.status(404).json({ status: 'fail', message: 'Product not found' });
+        }
+        return res.status(200).json({ status: 'success', data: payload, type: 'Product' });
+    } catch (error) {
+        next(error);
+    }
+};
+
 // Resolve QR URL to product payload and optionally verify it matches expected URL.
 exports.resolveProductByQrUrl = async (req: any, res: any, next: any) => {
     try {
@@ -1340,7 +1373,7 @@ exports.resolveProductByQrUrl = async (req: any, res: any, next: any) => {
             });
         }
 
-        const parsed = extractProductFromQrUrl(qrUrl);
+        const parsed = await resolveItemFromScan(qrUrl);
         if (!parsed) {
             return res.status(400).json({
                 status: 'fail',
@@ -1359,7 +1392,7 @@ exports.resolveProductByQrUrl = async (req: any, res: any, next: any) => {
         const scannedNormalizedUrl = buildPublicProductUrl(parsed.productId, parsed.qrcodeId);
         let isSecurityCheckPassed = true;
         if (expectedQrUrl) {
-            const expectedParsed = extractProductFromQrUrl(expectedQrUrl);
+            const expectedParsed = await resolveItemFromScan(expectedQrUrl);
             isSecurityCheckPassed = !!expectedParsed
                 && String(expectedParsed.productId) === String(parsed.productId)
                 && Number(expectedParsed.qrcodeId) === Number(parsed.qrcodeId);

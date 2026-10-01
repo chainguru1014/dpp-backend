@@ -19,6 +19,7 @@ router.post('/serials',QRcodeController.getSerials)
 router.delete('/product/:productId/:qrcodeId', QRcodeController.deleteQrcode); // Void one minted QR code
 router.get('/product/:key', QRcodeController.getProductByKey); // Public web endpoint
 router.get('/public/:productId/:qrcodeId', QRcodeController.getPublicProductByIds); // Public app/web endpoint
+router.get('/gs1/:gtin/:serial', QRcodeController.getPublicProductByGs1); // Public: GS1 Digital Link /01/:gtin/21/:serial
 router.get('/:id', QRcodeController.getQRcode);
 router.post('/', QRcodeController.addQRcode);
 router.put('/:id', QRcodeController.updateQRcode);
