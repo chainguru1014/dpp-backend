@@ -91,8 +91,10 @@ const productSchema = new mongoose.Schema({
             default: ''
         }
     },
-    // Certifications shown on the Lifecycle > Materials tab. Mixed so it accepts
-    // either the legacy array of names (strings) or {icon,title,content} objects.
+    // Certifications shown on the Lifecycle > Materials and Compliance tabs.
+    // Mixed so it accepts either the legacy array of names (strings) or
+    // objects: { icon, title, content } plus the optional evidence fields
+    // { issuer, number, validUntil (YYYY-MM-DD), fileUrl }.
     certifications: [{ type: mongoose.Schema.Types.Mixed }],
     // Sustainability-impact for the Lifecycle > Dispose tab. Legacy string
     // fields are still read; `items` is the new {icon,value,label,description} list.
@@ -219,7 +221,11 @@ const productSchema = new mongoose.Schema({
             percent: { type: Number },
             // Optional country of origin + uploaded icon (Lifecycle > Materials).
             origin: { type: String, default: '' },
-            icon: { type: String, default: '' }
+            icon: { type: String, default: '' },
+            // "Required for verification": this material must be covered by
+            // a certificate (`certificate` = that certification's title).
+            required: { type: Boolean, default: false },
+            certificate: { type: String, default: '' }
         }]
     },
     maintenance: {
