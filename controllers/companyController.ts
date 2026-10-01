@@ -274,12 +274,11 @@ exports.updateDppTheme = async (req: any, res: any, next: any) => {
 // Only the design is returned, never anything else about the company.
 exports.getPublicDppTheme = async (req: any, res: any, next: any) => {
     try {
-        const mongoose = require('mongoose');
-        const id = String(req.params.id || '');
-        const company = mongoose.Types.ObjectId.isValid(id)
-            ? await Company.findById(id).select('dppTheme').lean()
-            : null;
-        res.status(200).json({ status: 'success', data: { dppTheme: normalizeDppTheme(company?.dppTheme) } });
+        // ?brand=<name>: the design of that brand of the company (a company
+        // can have several). Without it — older app builds — the company's
+        // only brand, or the design it saved before brands existed.
+        const { themeForBrand } = require('./brandController');
+        res.status(200).json({ status: 'success', data: { dppTheme: await themeForBrand(req.params.id, req.query?.brand) } });
     } catch (error) {
         next(error);
     }
