@@ -193,17 +193,23 @@ const findOtpOwner = async (email: string) => {
     // A staff employee's email always signs in as that employee — checked
     // first, so a company admin email that is also its Supervisor (see
     // companyController.ensureDefaultSupervisor) lands in the staff session.
-    const employee = await findActiveEmployeeByEmail(email, '+otpCode +otpExpiresAt +otpAttempts +otpResendAt');
+    // The three lookups run together (one wait instead of three in a row —
+    // this sits in front of every "send me a code" and every sign-in); the
+    // order of preference stays Employee, then User, then Company.
+    const otpFields = '+otpCode +otpExpiresAt +otpAttempts +otpResendAt';
+    const [employee, user, company] = await Promise.all([
+        findActiveEmployeeByEmail(email, otpFields),
+        User.findOne({ email }).select(otpFields),
+        Company.findOne({ email }).select(otpFields)
+    ]);
     if (employee) {
         return { owner: employee, actorKind: 'Employee' };
     }
-    let owner = await User.findOne({ email }).select('+otpCode +otpExpiresAt +otpAttempts +otpResendAt');
-    if (owner) {
-        return { owner, actorKind: 'User' };
+    if (user) {
+        return { owner: user, actorKind: 'User' };
     }
-    owner = await Company.findOne({ email }).select('+otpCode +otpExpiresAt +otpAttempts +otpResendAt');
-    if (owner) {
-        return { owner, actorKind: 'Company' };
+    if (company) {
+        return { owner: company, actorKind: 'Company' };
     }
     return { owner: null, actorKind: null };
 };
@@ -251,11 +257,17 @@ const issueOtp = async (owner: any, email: string, res: any) => {
 
     const code = generateOtp();
     const now = Date.now();
-    owner.otpCode = code;
-    owner.otpExpiresAt = new Date(now + OTP_EXPIRY_MINUTES * 60 * 1000);
-    owner.otpResendAt = new Date(now + 60 * 1000);
-    owner.otpAttempts = 0;
-    await owner.save();
+    // A direct update of just these four fields: quicker than save() (which
+    // re-validates and rewrites the whole document) and it cannot fail on an
+    // older account that no longer passes some unrelated validation rule.
+    await owner.constructor.updateOne({ _id: owner._id }, {
+        $set: {
+            otpCode: code,
+            otpExpiresAt: new Date(now + OTP_EXPIRY_MINUTES * 60 * 1000),
+            otpResendAt: new Date(now + 60 * 1000),
+            otpAttempts: 0
+        }
+    });
 
     // Fire-and-forget: SMTP takes several seconds, so respond immediately and
     // let delivery finish in the background. A failed send is only logged —
