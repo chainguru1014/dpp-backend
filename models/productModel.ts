@@ -251,6 +251,12 @@ const productSchema = new mongoose.Schema({
         rentalUrl: { type: String, default: '' },
         disposeUrl: { type: String, default: '' }
     },
+    // The four end-of-life services in detail (repair, resell, rent,
+    // recycle), each shaped as utils/circularity.SERVICE_FIELDS describes.
+    // The `disposal` links above stay as each service's web link, so older
+    // products and apps keep working. Always read through
+    // utils/circularity.normalizeCircularity.
+    circularity: { type: mongoose.Schema.Types.Mixed, default: undefined },
     traceabilityEsg: {
         madeIn: { type: String, default: '' },
         // Explicit country of origin (Lifecycle > Traceability); falls back to madeIn.
