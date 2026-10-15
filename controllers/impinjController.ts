@@ -22,7 +22,12 @@ const fetch = require('node-fetch');
 // IPv6 one (::1), which nothing answers on. Pinning the literal IPv4
 // address sidesteps the resolution step entirely.
 const READER_SERVICE_BASE_URL = 'http://127.0.0.1:5284';
-const REQUEST_TIMEOUT_MS = 8000;
+// Connect/status calls can involve the Octane SDK talking live to the
+// physical R700 (not just returning cached state), which can take longer
+// than a typical API call — 8s was cutting that off. The app's own
+// REQUEST_TIMEOUT_MS (src/native/impinjRfid.ts) is set a few seconds above
+// this one so it doesn't give up before this backend call would.
+const REQUEST_TIMEOUT_MS = 20000;
 
 async function forward(req: any, res: any, method: string, path: string) {
     const controller = new AbortController();
