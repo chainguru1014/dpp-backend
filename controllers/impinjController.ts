@@ -12,7 +12,16 @@ const fetch = require('node-fetch');
 // already expects), except for a connectivity failure to the reader-service
 // itself, which is reported the same way so the app's error handling
 // doesn't need to special-case "backend unreachable" vs "reader unreachable".
-const READER_SERVICE_BASE_URL = 'http://localhost:5284';
+//
+// Explicit 127.0.0.1, not "localhost": confirmed live that `curl
+// localhost:5284/...` from a shell on the hosting server works instantly,
+// but this same fetch() call from the Node process hung until our own
+// 8s timeout. Classic IPv4/IPv6 localhost-resolution mismatch — the
+// reader-service is only actually bound to the IPv4 loopback address, and
+// Node's DNS resolution for the bare hostname "localhost" was picking the
+// IPv6 one (::1), which nothing answers on. Pinning the literal IPv4
+// address sidesteps the resolution step entirely.
+const READER_SERVICE_BASE_URL = 'http://127.0.0.1:5284';
 const REQUEST_TIMEOUT_MS = 8000;
 
 async function forward(req: any, res: any, method: string, path: string) {
