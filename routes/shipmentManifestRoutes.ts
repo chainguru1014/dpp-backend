@@ -14,6 +14,7 @@ router.delete('/:id', protect, restrictTo('Employee', 'Company'), ShipmentManife
 // capture, captureRoutes.ts), so every inspection is attributable to who
 // actually ran it.
 router.get('/code/:code', protect, restrictTo('Employee'), ShipmentManifestController.lookupByCode);
+router.post('/:id/preview-match', protect, restrictTo('Employee'), ShipmentManifestController.previewMatch);
 router.post('/:id/inspect', protect, restrictTo('Employee'), ShipmentManifestController.inspect);
 
 module.exports = router;

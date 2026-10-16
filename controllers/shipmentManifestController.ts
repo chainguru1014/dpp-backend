@@ -85,7 +85,7 @@ exports.list = async (req: any, res: any, next: any) => {
         const manifests = await ShipmentManifest.find(filter)
             .sort({ createdAt: -1 })
             .limit(200)
-            .populate('product_id', 'name images')
+            .populate('product_id', 'name images color size')
             .lean();
 
         res.status(200).json({ status: 'success', data: manifests });
@@ -100,7 +100,7 @@ exports.getById = async (req: any, res: any, next: any) => {
         if (!scope.allowed) {
             return next(new AppError(403, 'fail', 'You do not have permission to view this shipment manifest'));
         }
-        const manifest = await ShipmentManifest.findById(req.params.id).populate('product_id', 'name images');
+        const manifest = await ShipmentManifest.findById(req.params.id).populate('product_id', 'name images color size');
         if (!manifest || (scope.companyId && String(manifest.company_id) !== String(scope.companyId))) {
             return next(new AppError(404, 'fail', 'Shipment manifest not found'));
         }
@@ -180,8 +180,58 @@ async function resolveEpcToQrcodeId(epc: string): Promise<{ productId: string; q
     return { productId: String(pmc.product_id), qrcodeId: pmc.qrcode_id };
 }
 
+// Shared by the live preview and the final persisted inspection — resolves
+// every scanned EPC and diffs against the manifest's expected list.
+async function computeMatch(manifest: any, rawEpcs: string[]) {
+    const uniqueEpcs = [...new Set(rawEpcs.map((e) => String(e || '').trim()).filter(Boolean))];
+    const expectedSet = new Set(manifest.expected_qrcode_ids);
+    const matchedSet = new Set<number>();
+    const unexpectedEpcs: string[] = [];
+
+    for (const epc of uniqueEpcs) {
+        const resolved = await resolveEpcToQrcodeId(epc);
+        if (resolved && String(resolved.productId) === String(manifest.product_id) && expectedSet.has(resolved.qrcodeId)) {
+            matchedSet.add(resolved.qrcodeId);
+        } else {
+            unexpectedEpcs.push(epc);
+        }
+    }
+
+    const missingIds = manifest.expected_qrcode_ids.filter((id: number) => !matchedSet.has(id));
+    return {
+        uniqueEpcs,
+        matchedQrcodeIds: [...matchedSet],
+        missingQrcodeIds: missingIds,
+        unexpectedEpcs,
+        result: missingIds.length === 0 ? 'pass' : 'fail'
+    };
+}
+
+// Live match preview during an in-progress gate scan — "Real-Time Matching"
+// per the brief: as tags accumulate client-side, the UI polls this to show
+// matched/missing counts updating live, before the staff member taps
+// Finish Scan. Deliberately read-only: no InspectionRecord, no manifest
+// status change — the real, persisted result only comes from inspect()
+// below, once the scan session is actually finished.
+exports.previewMatch = async (req: any, res: any, next: any) => {
+    try {
+        const manifest = await ShipmentManifest.findById(req.params.id).select('product_id expected_qrcode_ids');
+        if (!manifest) {
+            return next(new AppError(404, 'fail', 'Shipment manifest not found'));
+        }
+        const rawEpcs: string[] = Array.isArray(req.body?.scanned_epcs) ? req.body.scanned_epcs : [];
+        const match = await computeMatch(manifest, rawEpcs);
+        res.status(200).json({ status: 'success', data: match });
+    } catch (error) {
+        next(error);
+    }
+};
+
 // The actual gate-scan comparison: every unique EPC the R700 collected
-// during one scan session vs. the manifest's expected qrcode_ids.
+// during one scan session vs. the manifest's expected qrcode_ids. Persists
+// an InspectionRecord and updates the manifest's status — this is the
+// authoritative result (Step 3/4 of the brief: final indication + WMS
+// update), unlike previewMatch above.
 exports.inspect = async (req: any, res: any, next: any) => {
     try {
         const manifest = await ShipmentManifest.findById(req.params.id);
@@ -189,36 +239,20 @@ exports.inspect = async (req: any, res: any, next: any) => {
             return next(new AppError(404, 'fail', 'Shipment manifest not found'));
         }
         const rawEpcs: string[] = Array.isArray(req.body?.scanned_epcs) ? req.body.scanned_epcs : [];
-        const uniqueEpcs = [...new Set(rawEpcs.map((e) => String(e || '').trim()).filter(Boolean))];
-
-        const expectedSet = new Set(manifest.expected_qrcode_ids);
-        const matchedSet = new Set<number>();
-        const unexpectedEpcs: string[] = [];
-
-        for (const epc of uniqueEpcs) {
-            const resolved = await resolveEpcToQrcodeId(epc);
-            if (resolved && String(resolved.productId) === String(manifest.product_id) && expectedSet.has(resolved.qrcodeId)) {
-                matchedSet.add(resolved.qrcodeId);
-            } else {
-                unexpectedEpcs.push(epc);
-            }
-        }
-
-        const missingIds = manifest.expected_qrcode_ids.filter((id: number) => !matchedSet.has(id));
-        const result = missingIds.length === 0 ? 'pass' : 'fail';
+        const match = await computeMatch(manifest, rawEpcs);
 
         const record = await InspectionRecord.create({
             manifest_id: manifest._id,
             company_id: manifest.company_id,
             inspected_by_employee_id: req.user?.actorKind === 'Employee' ? req.user.id : null,
-            scanned_epcs: uniqueEpcs,
-            matched_qrcode_ids: [...matchedSet],
-            missing_qrcode_ids: missingIds,
-            unexpected_epcs: unexpectedEpcs,
-            result
+            scanned_epcs: match.uniqueEpcs,
+            matched_qrcode_ids: match.matchedQrcodeIds,
+            missing_qrcode_ids: match.missingQrcodeIds,
+            unexpected_epcs: match.unexpectedEpcs,
+            result: match.result
         });
 
-        manifest.status = result === 'pass' ? 'complete' : 'mismatch';
+        manifest.status = match.result === 'pass' ? 'complete' : 'mismatch';
         manifest.latest_inspection_id = record._id;
         await manifest.save();
 
