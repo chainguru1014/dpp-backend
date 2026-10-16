@@ -13,5 +13,7 @@ router.post('/stop', ImpinjController.stop);
 router.get('/tags', ImpinjController.tags);
 router.get('/tags/recent', ImpinjController.recentTags);
 router.delete('/tags', ImpinjController.clearTags);
+router.get('/settings', ImpinjController.getSettings);
+router.put('/settings', ImpinjController.updateSettings);
 
 module.exports = router;

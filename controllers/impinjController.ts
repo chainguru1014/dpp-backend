@@ -32,11 +32,15 @@ const REQUEST_TIMEOUT_MS = 20000;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function callReaderService(method: string, path: string): Promise<{ status: number; body: any }> {
+async function callReaderService(method: string, path: string, body?: any): Promise<{ status: number; body: any }> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
     try {
-        const upstream = await fetch(`${READER_SERVICE_BASE_URL}${path}`, { method, signal: controller.signal });
+        const upstream = await fetch(`${READER_SERVICE_BASE_URL}${path}`, {
+            method,
+            signal: controller.signal,
+            ...(body !== undefined ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {}),
+        });
         if (upstream.status === 204) {
             return { status: 204, body: null };
         }
@@ -101,3 +105,14 @@ exports.recentTags = (req: any, res: any) => {
     return forward(req, res, 'GET', `/api/tags/recent?count=${count}`);
 };
 exports.clearTags = (req: any, res: any) => forward(req, res, 'DELETE', '/api/tags');
+
+// Reader connection settings (name/IP/port/timeout/reconnect behavior/
+// antenna selection/advanced inventory options) — proposed contract, not
+// yet confirmed against the reader-service's actual implementation:
+//   GET /api/reader/settings  -> current ReaderSettingsDto
+//   PUT /api/reader/settings  <- ReaderSettingsDto body -> applied ReaderSettingsDto
+// See app/src/native/impinjRfid.ts for the exact shape this expects/sends.
+exports.getSettings = (req: any, res: any) => forward(req, res, 'GET', '/api/reader/settings');
+exports.updateSettings = async (req: any, res: any) => {
+    return sendResult(res, await callReaderService('PUT', '/api/reader/settings', req.body || {}));
+};
