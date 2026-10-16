@@ -30,6 +30,7 @@ const traceRoutes = require('./routes/traceRoutes');
 const securityRoutes = require('./routes/securityRoutes');
 const brandRoutes = require('./routes/brandRoutes');
 const circularRoutes = require('./routes/circularRoutes');
+const shipmentManifestRoutes = require('./routes/shipmentManifestRoutes');
 const globalErrHandler = require('./controllers/errorController');
 const AppError = require('./utils/appError');
 
@@ -102,6 +103,7 @@ app.use('/trace', traceRoutes);
 app.use('/security', securityRoutes);
 app.use('/brand', brandRoutes);
 app.use('/circular', circularRoutes);
+app.use('/shipment-manifest', shipmentManifestRoutes);
 app.use('/', aiRoutes);
 
 // Serve product web page for URL-format QR codes:
