@@ -78,6 +78,14 @@ const START_RETRY_ATTEMPTS = 2;
 const START_RETRY_DELAY_MS = 2000;
 
 exports.start = async (req: any, res: any) => {
+    // Always stop first. A previous session can leave the reader's ROSpec
+    // genuinely Active server-side even after our own client state has
+    // forgotten about it entirely (e.g. a page refresh, or just tapping
+    // Connect again) — Octane/LLRP refuses to start an already-Active
+    // ROSpec: seen live as "Cannot start ROSpec ... in state Active".
+    // Stopping first guarantees a clean slate; stopping an already-stopped
+    // reader is harmless, so its result is ignored either way.
+    await callReaderService('POST', '/api/reader/stop');
     let result = await callReaderService('POST', '/api/reader/start');
     for (let attempt = 1; attempt < START_RETRY_ATTEMPTS && result.status >= 500; attempt++) {
         await sleep(START_RETRY_DELAY_MS);
