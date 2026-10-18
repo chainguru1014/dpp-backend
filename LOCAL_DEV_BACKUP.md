@@ -2,7 +2,7 @@
 
 ## Setup
 
-1. Copy `env.sample` to your local env file.
+1. Copy `.env.example` to `.env`.
 2. Install dependencies: `npm install`
 
 ## Run
