@@ -61,7 +61,12 @@ function buildRoSpec() {
     });
 }
 
-// Matches app/src/native/impinjRfid.ts's ImpinjTagRead exactly.
+// Matches app/src/native/impinjRfid.ts's ImpinjTagRead exactly, plus an
+// internal-only _lastSeenAtMs (stripped before responding) used for the
+// "in view" freshness window and sort order — a local wall-clock stamp
+// rather than trusting the reader-reported lastSeenTimeUtc for that,
+// since this needs to work even if the reader's own clock/timestamp
+// parameter turns out to be unreliable.
 type TagRead = {
     epc: string;
     antennaPort: number | null;
@@ -70,9 +75,23 @@ type TagRead = {
     firstSeenTimeUtc: string | null;
     lastSeenTimeUtc: string | null;
     phaseAngleInRadians: number | null;
+    _lastSeenAtMs: number;
 };
-const MAX_BUFFERED_TAGS = 2000;
-let tagBuffer: TagRead[] = [];
+// Keyed by EPC, not an append log — the reader re-reports the same tag on
+// every inventory round while it's in range, so without dedup the same EPC
+// would pile up repeatedly (seen live: duplicate rows, "New" badge on
+// already-seen tags, and a sort that couldn't fix it because the real
+// problem was duplicate rows, not wrong order).
+let tagsByEpc = new Map<string, TagRead>();
+// Matches the "in view" contract getImpinjTagsInView() already documents
+// in app/src/native/impinjRfid.ts (CorporateScannerScreen's capture-enabled
+// check depends on a tag currently being in range, not just ever seen).
+const TAG_IN_VIEW_WINDOW_MS = 10000;
+
+function stripInternal(tag: TagRead) {
+    const { _lastSeenAtMs, ...rest } = tag;
+    return rest;
+}
 
 let client: any = null;
 let connected = false;
@@ -123,22 +142,26 @@ function attachTagReportListener(reader: any) {
     reader.on('RO_ACCESS_REPORT', (msg: any) => {
         let list = msg.getTagReportData();
         if (!Array.isArray(list)) list = [list];
+        const nowMs = Date.now();
         for (const tagReportData of list) {
             const epcParam = tagReportData.getEPCParameter?.();
             const epc = epcParam?.getEPC?.();
             if (!epc) continue;
-            tagBuffer.push({
+            const existing = tagsByEpc.get(epc);
+            const lastSeenTimeUtc = microsToIso(microsFromTimestampParam(tagReportData.getLastSeenTimestampUTC?.())) || new Date(nowMs).toISOString();
+            tagsByEpc.set(epc, {
                 epc,
                 antennaPort: tagReportData.getAntennaID?.()?.getAntennaID?.() ?? null,
                 peakRssiInDbm: tagReportData.getPeakRSSI?.()?.getPeakRSSI?.() ?? null,
                 tagSeenCount: null,
-                firstSeenTimeUtc: microsToIso(microsFromTimestampParam(tagReportData.getFirstSeenTimestampUTC?.())),
-                lastSeenTimeUtc: microsToIso(microsFromTimestampParam(tagReportData.getLastSeenTimestampUTC?.())),
+                // Kept from the first sighting, not overwritten on repeat reads.
+                firstSeenTimeUtc: existing?.firstSeenTimeUtc
+                    ?? microsToIso(microsFromTimestampParam(tagReportData.getFirstSeenTimestampUTC?.()))
+                    ?? lastSeenTimeUtc,
+                lastSeenTimeUtc,
                 phaseAngleInRadians: null,
+                _lastSeenAtMs: nowMs,
             });
-        }
-        if (tagBuffer.length > MAX_BUFFERED_TAGS) {
-            tagBuffer = tagBuffer.slice(tagBuffer.length - MAX_BUFFERED_TAGS);
         }
     });
     // The reader expects a KEEPALIVE_ACK promptly or it may drop the
@@ -228,7 +251,7 @@ exports.start = async (req: any, res: any) => {
             throw new Error(`START_ROSPEC failed: ${startStatus}`);
         }
 
-        tagBuffer = [];
+        tagsByEpc = new Map();
         started = true;
     } catch (error: any) {
         started = false;
@@ -250,15 +273,31 @@ exports.stop = async (req: any, res: any) => {
     return res.status(200).json(buildStatus());
 };
 
-exports.tags = (req: any, res: any) => res.status(200).json(tagBuffer);
+// "Currently in view" — only tags re-read within the last
+// TAG_IN_VIEW_WINDOW_MS, newest-first. This is what CorporateScannerScreen's
+// Passing Tags card and capture-enabled check both rely on.
+exports.tags = (req: any, res: any) => {
+    const cutoff = Date.now() - TAG_IN_VIEW_WINDOW_MS;
+    const inView = Array.from(tagsByEpc.values())
+        .filter((t) => t._lastSeenAtMs >= cutoff)
+        .sort((a, b) => b._lastSeenAtMs - a._lastSeenAtMs)
+        .map(stripInternal);
+    return res.status(200).json(inView);
+};
 
+// Full history since the last start()/clear, not windowed — every distinct
+// EPC seen this session, newest-first, capped to `count`.
 exports.recentTags = (req: any, res: any) => {
-    const count = Math.max(1, Math.min(MAX_BUFFERED_TAGS, Number(req.query?.count) || 100));
-    return res.status(200).json(tagBuffer.slice(-count));
+    const count = Math.max(1, Math.min(2000, Number(req.query?.count) || 100));
+    const all = Array.from(tagsByEpc.values())
+        .sort((a, b) => b._lastSeenAtMs - a._lastSeenAtMs)
+        .slice(0, count)
+        .map(stripInternal);
+    return res.status(200).json(all);
 };
 
 exports.clearTags = (req: any, res: any) => {
-    tagBuffer = [];
+    tagsByEpc = new Map();
     res.status(200).json({ ok: true });
 };
 
