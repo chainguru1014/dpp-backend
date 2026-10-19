@@ -6,17 +6,19 @@
 // package (pure-JS LLRP 1.0/1.1 client/encoder, no native deps) rather than
 // hand-rolling the binary TLV framing ourselves.
 //
-// This mirrors the shape of impinjRestController.ts (status/connect/
-// disconnect/start/stop/tags/recentTags/clearTags) so swapping which
-// upstream the app eventually talks to is just a route-mount change, not
-// a contract change. Same deal as the REST attempt: this is the thing
-// being validated right now on the hosting server (which reaches the
-// reader over a Tailscale subnet route), not yet a confirmed replacement
-// for the .NET SDK proxy.
+// Response shapes here match app/src/native/impinjRfid.ts's ImpinjReaderStatus/
+// ImpinjTagRead/ImpinjReaderSettings exactly (field-for-field, same as what
+// the .NET proxy forwards) — not just impinjRestController.ts's looser shape
+// — because this one IS wired into the app (see impinjRfid.ts's `impinj-llrp`
+// base path), while impinjRestController.ts never was. Screens call
+// getImpinjReaderStatus()/connectImpinjReader() expecting a 200 response
+// with isConnected reflecting success/failure, never a thrown error for an
+// ordinary "reader didn't answer" case — see CorporateScannerScreen.tsx's
+// `if (!status.isConnected) throw new Error(status.lastError ...)` pattern.
 const { LLRPClient, LLRPCore } = require('llrpjs');
 
-const READER_HOST = process.env.IMPINJ_LLRP_HOST || ''; // reader's LAN IP, reachable from this host via the Tailscale subnet route
-const READER_PORT = Number(process.env.IMPINJ_LLRP_PORT || 5084);
+let READER_HOST = process.env.IMPINJ_LLRP_HOST || ''; // reader's LAN IP, reachable from this host via the Tailscale subnet route
+let READER_PORT = Number(process.env.IMPINJ_LLRP_PORT || 5084);
 const ROSPEC_ID = Number(process.env.IMPINJ_LLRP_ROSPEC_ID || 123);
 const CONNECT_TIMEOUT_MS = 8000;
 const TRANSACT_TIMEOUT_MS = 8000;
@@ -59,12 +61,63 @@ function buildRoSpec() {
     });
 }
 
-type TagRead = { epc: string; antennaId?: number; rssi?: number; seenAt: string };
+// Matches app/src/native/impinjRfid.ts's ImpinjTagRead exactly.
+type TagRead = {
+    epc: string;
+    antennaPort: number | null;
+    peakRssiInDbm: number | null;
+    tagSeenCount: number | null;
+    firstSeenTimeUtc: string | null;
+    lastSeenTimeUtc: string | null;
+    phaseAngleInRadians: number | null;
+};
 const MAX_BUFFERED_TAGS = 2000;
 let tagBuffer: TagRead[] = [];
 
 let client: any = null;
 let connected = false;
+let started = false;
+let lastError: string | null = null;
+let lastErrorAtUtc: string | null = null;
+
+function recordError(message: string) {
+    lastError = message;
+    lastErrorAtUtc = new Date().toISOString();
+}
+
+// Matches app/src/native/impinjRfid.ts's ImpinjReaderStatus exactly.
+// firmwareVersion/modelName/temperatureInCelsius are always null here —
+// neither screen that consumes this (CorporateScannerScreen,
+// ShipmentInspectionScreen) reads them, so GET_READER_CAPABILITIES (the
+// LLRP message that would populate them) wasn't worth the extra round trip.
+function buildStatus() {
+    return {
+        isConnected: connected && !!client?.socketWritable,
+        isStarted: started,
+        address: READER_HOST ? `${READER_HOST}:${READER_PORT}` : null,
+        firmwareVersion: null,
+        modelName: null,
+        temperatureInCelsius: null,
+        lastError,
+        lastErrorAtUtc,
+    };
+}
+
+// LLRP timestamps arrive as microseconds-since-epoch (possibly a BigInt via
+// llrpjs's json-bigint dependency) — Number() handles both cleanly, and a
+// microsecond epoch value is comfortably within Number.MAX_SAFE_INTEGER.
+function microsToIso(micros: any): string | null {
+    if (micros == null) return null;
+    try {
+        return new Date(Number(micros) / 1000).toISOString();
+    } catch {
+        return null;
+    }
+}
+
+function microsFromTimestampParam(param: any): any {
+    return param?.getMicroseconds ? param.getMicroseconds() : undefined;
+}
 
 function attachTagReportListener(reader: any) {
     reader.on('RO_ACCESS_REPORT', (msg: any) => {
@@ -76,9 +129,12 @@ function attachTagReportListener(reader: any) {
             if (!epc) continue;
             tagBuffer.push({
                 epc,
-                antennaId: tagReportData.getAntennaID?.()?.getAntennaID?.(),
-                rssi: tagReportData.getPeakRSSI?.()?.getPeakRSSI?.(),
-                seenAt: new Date().toISOString(),
+                antennaPort: tagReportData.getAntennaID?.()?.getAntennaID?.() ?? null,
+                peakRssiInDbm: tagReportData.getPeakRSSI?.()?.getPeakRSSI?.() ?? null,
+                tagSeenCount: null,
+                firstSeenTimeUtc: microsToIso(microsFromTimestampParam(tagReportData.getFirstSeenTimestampUTC?.())),
+                lastSeenTimeUtc: microsToIso(microsFromTimestampParam(tagReportData.getLastSeenTimestampUTC?.())),
+                phaseAngleInRadians: null,
             });
         }
         if (tagBuffer.length > MAX_BUFFERED_TAGS) {
@@ -90,13 +146,13 @@ function attachTagReportListener(reader: any) {
     reader.on('KEEPALIVE', () => {
         reader.send(new LLRPCore.KEEPALIVE_ACK());
     });
-    reader.on('disconnect', () => { connected = false; });
-    reader.on('error', () => { connected = false; });
+    reader.on('disconnect', () => { connected = false; started = false; });
+    reader.on('error', () => { connected = false; started = false; });
 }
 
 async function ensureConnected() {
     if (connected && client?.socketWritable) return client;
-    if (!READER_HOST) throw Object.assign(new Error('IMPINJ_LLRP_HOST is not configured on this server'), { status: 500 });
+    if (!READER_HOST) throw new Error('IMPINJ_LLRP_HOST is not configured on this server');
 
     client = new LLRPClient({ host: READER_HOST, port: READER_PORT });
     attachTagReportListener(client);
@@ -120,22 +176,19 @@ async function ensureConnected() {
     return client;
 }
 
-exports.status = async (req: any, res: any) => {
-    try {
-        const reader = await ensureConnected();
-        return res.status(200).json({ connected: true, host: READER_HOST, port: READER_PORT, bufferedTags: tagBuffer.length });
-    } catch (error: any) {
-        return res.status(error?.status || 502).json({ error: error?.message || 'Could not reach the Impinj R700 reader over LLRP' });
-    }
-};
+// status never attempts a connection itself — screens call this first,
+// specifically to check current state before deciding whether to call
+// connect() (see CorporateScannerScreen.tsx's handleConnectPress), so this
+// just reflects in-memory state.
+exports.status = (req: any, res: any) => res.status(200).json(buildStatus());
 
 exports.connect = async (req: any, res: any) => {
     try {
         await ensureConnected();
-        return res.status(200).json({ ok: true });
     } catch (error: any) {
-        return res.status(error?.status || 502).json({ error: error?.message || 'Could not connect to the Impinj R700 reader over LLRP' });
+        recordError(error?.message || 'Could not connect to the Impinj R700 reader over LLRP');
     }
+    return res.status(200).json(buildStatus());
 };
 
 exports.disconnect = async (req: any, res: any) => {
@@ -144,11 +197,13 @@ exports.disconnect = async (req: any, res: any) => {
             await client.transact(new LLRPCore.CLOSE_CONNECTION(), TRANSACT_TIMEOUT_MS).catch(() => null);
             await client.disconnect();
         }
-        connected = false;
-        return res.status(200).json({ ok: true });
     } catch (error: any) {
-        return res.status(502).json({ error: error?.message || 'Could not disconnect from the Impinj R700 reader' });
+        recordError(error?.message || 'Could not disconnect from the Impinj R700 reader');
+    } finally {
+        connected = false;
+        started = false;
     }
+    return res.status(200).json(buildStatus());
 };
 
 exports.start = async (req: any, res: any) => {
@@ -163,21 +218,23 @@ exports.start = async (req: any, res: any) => {
         const addRsp = await reader.transact(new LLRPCore.ADD_ROSPEC().setROSpec(roSpec), TRANSACT_TIMEOUT_MS);
         const addStatus = addRsp?.getLLRPStatus?.()?.getStatusCode?.();
         if (addStatus && addStatus !== 'M_Success') {
-            return res.status(502).json({ error: `ADD_ROSPEC failed: ${addStatus}` });
+            throw new Error(`ADD_ROSPEC failed: ${addStatus}`);
         }
 
         await reader.transact(new LLRPCore.ENABLE_ROSPEC({ data: { ROSpecID: ROSPEC_ID } }), TRANSACT_TIMEOUT_MS);
         const startRsp = await reader.transact(new LLRPCore.START_ROSPEC({ data: { ROSpecID: ROSPEC_ID } }), TRANSACT_TIMEOUT_MS);
         const startStatus = startRsp?.getLLRPStatus?.()?.getStatusCode?.();
         if (startStatus && startStatus !== 'M_Success') {
-            return res.status(502).json({ error: `START_ROSPEC failed: ${startStatus}` });
+            throw new Error(`START_ROSPEC failed: ${startStatus}`);
         }
 
         tagBuffer = [];
-        return res.status(200).json({ ok: true });
+        started = true;
     } catch (error: any) {
-        return res.status(error?.status || 502).json({ error: error?.message || 'Could not start the Impinj R700 reader over LLRP' });
+        started = false;
+        recordError(error?.message || 'Could not start the Impinj R700 reader over LLRP');
     }
+    return res.status(200).json(buildStatus());
 };
 
 exports.stop = async (req: any, res: any) => {
@@ -185,10 +242,12 @@ exports.stop = async (req: any, res: any) => {
         const reader = await ensureConnected();
         await reader.transact(new LLRPCore.STOP_ROSPEC({ data: { ROSpecID: ROSPEC_ID } }), TRANSACT_TIMEOUT_MS);
         await reader.transact(new LLRPCore.DELETE_ROSPEC({ data: { ROSpecID: ROSPEC_ID } }), TRANSACT_TIMEOUT_MS);
-        return res.status(200).json({ ok: true });
     } catch (error: any) {
-        return res.status(error?.status || 502).json({ error: error?.message || 'Could not stop the Impinj R700 reader over LLRP' });
+        recordError(error?.message || 'Could not stop the Impinj R700 reader over LLRP');
+    } finally {
+        started = false;
     }
+    return res.status(200).json(buildStatus());
 };
 
 exports.tags = (req: any, res: any) => res.status(200).json(tagBuffer);
@@ -201,4 +260,44 @@ exports.recentTags = (req: any, res: any) => {
 exports.clearTags = (req: any, res: any) => {
     tagBuffer = [];
     res.status(200).json({ ok: true });
+};
+
+// Matches app/src/native/impinjRfid.ts's ImpinjReaderSettings — only
+// ipAddress/port are actually backed by real state (READER_HOST/PORT);
+// the rest are fixed/derived values so the settings form (CorporateScannerScreen)
+// has something sensible to show instead of blanks. Changing ipAddress/port
+// here drops the current connection, since a live LLRP session can't be
+// repointed at a different host.
+function buildSettings() {
+    return {
+        readerName: 'Impinj R700 (LLRP)',
+        ipAddress: READER_HOST,
+        port: READER_PORT,
+        connectionTimeoutMs: CONNECT_TIMEOUT_MS,
+        autoReconnect: false,
+        reconnectIntervalMs: 5000,
+        maxReconnectAttempts: 0,
+        unlimitedReconnectAttempts: false,
+        autoConnectOnStartup: false,
+        availableAntennaPorts: null,
+        enabledAntennaPorts: null,
+    };
+}
+
+exports.getSettings = (req: any, res: any) => res.status(200).json(buildSettings());
+
+exports.updateSettings = async (req: any, res: any) => {
+    const body = req.body || {};
+    const nextHost = typeof body.ipAddress === 'string' && body.ipAddress.trim() ? body.ipAddress.trim() : READER_HOST;
+    const nextPort = Number(body.port) > 0 ? Number(body.port) : READER_PORT;
+    if (nextHost !== READER_HOST || nextPort !== READER_PORT) {
+        if (client?.socketWritable) {
+            await client.disconnect().catch(() => {});
+        }
+        connected = false;
+        started = false;
+        READER_HOST = nextHost;
+        READER_PORT = nextPort;
+    }
+    return res.status(200).json(buildSettings());
 };

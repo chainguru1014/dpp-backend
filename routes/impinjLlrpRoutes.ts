@@ -14,5 +14,7 @@ router.post('/stop', ImpinjLlrpController.stop);
 router.get('/tags', ImpinjLlrpController.tags);
 router.get('/tags/recent', ImpinjLlrpController.recentTags);
 router.delete('/tags', ImpinjLlrpController.clearTags);
+router.get('/settings', ImpinjLlrpController.getSettings);
+router.put('/settings', ImpinjLlrpController.updateSettings);
 
 module.exports = router;
