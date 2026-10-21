@@ -104,6 +104,45 @@ function recordError(message: string) {
     lastErrorAtUtc = new Date().toISOString();
 }
 
+// The R700 only accepts one LLRP client at a time. If the app that started
+// a read session stops calling /tags (closed, crashed, lost its network)
+// without ever calling /stop or /disconnect, the session would otherwise
+// sit open indefinitely — blocking every other phone/device with "a client
+// initiated connection already exists" until someone notices and manually
+// power-cycles the reader. This watchdog frees it automatically instead.
+const TAG_POLL_IDLE_DISCONNECT_MS = 15000; // ~10x the app's own poll interval (RFID_POLL_MS = 1500ms)
+const IDLE_WATCHDOG_INTERVAL_MS = 5000;
+let lastTagsPollAtMs: number | null = null;
+
+function markTagsPolled() {
+    lastTagsPollAtMs = Date.now();
+}
+
+async function disconnectForIdle() {
+    try {
+        if (client?.socketWritable) {
+            await client.transact(new LLRPCore.STOP_ROSPEC({ data: { ROSpecID: ROSPEC_ID } }), TRANSACT_TIMEOUT_MS).catch(() => null);
+            await client.transact(new LLRPCore.DELETE_ROSPEC({ data: { ROSpecID: ROSPEC_ID } }), TRANSACT_TIMEOUT_MS).catch(() => null);
+            await client.transact(new LLRPCore.CLOSE_CONNECTION(), TRANSACT_TIMEOUT_MS).catch(() => null);
+            await client.disconnect().catch(() => {});
+        }
+    } catch {
+        // Best effort — the goal is freeing the reader's slot, not a clean
+        // LLRP teardown; fall through to resetting local state regardless.
+    } finally {
+        connected = false;
+        started = false;
+        lastTagsPollAtMs = null;
+    }
+}
+
+const idleWatchdogTimer = setInterval(() => {
+    if (!started || lastTagsPollAtMs == null) return;
+    if (Date.now() - lastTagsPollAtMs < TAG_POLL_IDLE_DISCONNECT_MS) return;
+    disconnectForIdle();
+}, IDLE_WATCHDOG_INTERVAL_MS);
+idleWatchdogTimer.unref?.();
+
 // Matches app/src/native/impinjRfid.ts's ImpinjReaderStatus exactly.
 // firmwareVersion/modelName/temperatureInCelsius are always null here —
 // neither screen that consumes this (CorporateScannerScreen,
@@ -225,6 +264,7 @@ exports.disconnect = async (req: any, res: any) => {
     } finally {
         connected = false;
         started = false;
+        lastTagsPollAtMs = null;
     }
     return res.status(200).json(buildStatus());
 };
@@ -253,6 +293,11 @@ exports.start = async (req: any, res: any) => {
 
         tagsByEpc = new Map();
         started = true;
+        // Baseline the idle clock on start, not on the first poll — otherwise
+        // the watchdog has no reference point until a /tags call happens to
+        // land, which could itself be more than TAG_POLL_IDLE_DISCONNECT_MS
+        // away from start() under a slow first request.
+        markTagsPolled();
     } catch (error: any) {
         started = false;
         recordError(error?.message || 'Could not start the Impinj R700 reader over LLRP');
@@ -269,6 +314,7 @@ exports.stop = async (req: any, res: any) => {
         recordError(error?.message || 'Could not stop the Impinj R700 reader over LLRP');
     } finally {
         started = false;
+        lastTagsPollAtMs = null;
     }
     return res.status(200).json(buildStatus());
 };
@@ -277,6 +323,7 @@ exports.stop = async (req: any, res: any) => {
 // TAG_IN_VIEW_WINDOW_MS, newest-first. This is what CorporateScannerScreen's
 // Passing Tags card and capture-enabled check both rely on.
 exports.tags = (req: any, res: any) => {
+    markTagsPolled();
     const cutoff = Date.now() - TAG_IN_VIEW_WINDOW_MS;
     const inView = Array.from(tagsByEpc.values())
         .filter((t) => t._lastSeenAtMs >= cutoff)
@@ -288,6 +335,7 @@ exports.tags = (req: any, res: any) => {
 // Full history since the last start()/clear, not windowed — every distinct
 // EPC seen this session, newest-first, capped to `count`.
 exports.recentTags = (req: any, res: any) => {
+    markTagsPolled();
     const count = Math.max(1, Math.min(2000, Number(req.query?.count) || 100));
     const all = Array.from(tagsByEpc.values())
         .sort((a, b) => b._lastSeenAtMs - a._lastSeenAtMs)
