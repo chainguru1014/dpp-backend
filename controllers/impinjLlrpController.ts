@@ -204,7 +204,15 @@ async function closeClient() {
 // sit open indefinitely — blocking every other phone/device with "a client
 // initiated connection already exists" until someone notices and manually
 // power-cycles the reader. This watchdog frees it automatically instead.
-const TAG_POLL_IDLE_DISCONNECT_MS = 15000; // ~10x the app's own poll interval (RFID_POLL_MS = 1500ms)
+// 15s (~10x the app's own 1.5s poll interval) turned out too tight for real
+// mobile network conditions — a brief WiFi hiccup or the app briefly losing
+// focus during genuinely active use was enough to trip it, silently killing
+// a live session the user hadn't actually abandoned (seen live: Passing
+// Tags going blank after "some minutes" while the UI still showed
+// Connected/Started, since the poll loop had no way to notice). 60s still
+// frees a truly-abandoned session (closed tab, crashed app) in reasonable
+// time without being this trigger-happy against transient gaps.
+const TAG_POLL_IDLE_DISCONNECT_MS = 60000;
 const IDLE_WATCHDOG_INTERVAL_MS = 5000;
 let lastTagsPollAtMs: number | null = null;
 
