@@ -17,6 +17,75 @@
 // `if (!status.isConnected) throw new Error(status.lastError ...)` pattern.
 const { LLRPClient, LLRPCore } = require('llrpjs');
 
+// Two llrpjs bugs that a live, tag-streaming reader hits constantly (same
+// ones patched in app/src/native/impinjRfid.ts — ported here because the
+// web build's /impinj-llrp/stop and /disconnect go through this file, not
+// that one, and were hanging the same way):
+//  - its socket 'data' handler decodes only ONE message per chunk, so when
+//    the reader sends several together (a response plus tag reports) the
+//    rest sit in the buffer until more data happens to arrive;
+//  - its transact() awaits the same receive promise in a `while (true)`
+//    loop, so if any other message (a tag report, a keepalive) arrives
+//    before the response it spins forever — seen live as stop()/disconnect()
+//    never resolving while tags are actively streaming in, which is exactly
+//    when a user is likely to hit Disconnect.
+// onData is replaced to drain every complete message, and transact() below
+// is used instead of llrpjs's.
+const { LLRPNet } = require('llrpjs/dist/src/net/base');
+const { LLRPProxyMessage } = require('llrpjs/dist/src/proxy/message');
+const { LLRPError } = require('llrpjs/dist/src/base/error');
+if (LLRPNet && !LLRPNet.prototype.__drainsAllMessages) {
+    LLRPNet.prototype.onData = async function (data: any) {
+        try {
+            this._scanner.addBuffer(data);
+            let msgBuf;
+            while ((msgBuf = this._scanner.getNext())) {
+                const msg = new LLRPProxyMessage(msgBuf).decode();
+                this._ee.emit('message', msg);
+                this._ee.emit(msg.getName(), msg);
+            }
+        } catch (e) {
+            if (e instanceof LLRPError) this._ee.emit('error', e);
+            else throw e;
+        }
+    };
+    LLRPNet.prototype.__drainsAllMessages = true;
+}
+
+// Sends `message` and resolves with its response, ignoring whatever else the
+// reader sends meanwhile. Rejects with the same ERR_LLRP_READER_TIMEOUT
+// llrpjs uses.
+function transact(reader: any, message: any, timeoutMs: number): Promise<any> {
+    const responseName = message.getResponseName();
+    return new Promise((resolve, reject) => {
+        let timer: any = null;
+        const onResponse = (response: any) => {
+            cleanup();
+            resolve(response);
+        };
+        const cleanup = () => {
+            if (timer) clearTimeout(timer);
+            if (responseName) reader.off(responseName, onResponse);
+        };
+        if (responseName) {
+            reader.on(responseName, onResponse);
+            timer = setTimeout(() => {
+                cleanup();
+                reject(new LLRPError('ERR_LLRP_READER_TIMEOUT'));
+            }, timeoutMs);
+        }
+        reader.send(message).then(
+            () => {
+                if (!responseName) resolve(null);
+            },
+            (error: any) => {
+                cleanup();
+                reject(error);
+            },
+        );
+    });
+}
+
 let READER_HOST = process.env.IMPINJ_LLRP_HOST || ''; // reader's LAN IP, reachable from this host via the Tailscale subnet route
 let READER_PORT = Number(process.env.IMPINJ_LLRP_PORT || 5084);
 const ROSPEC_ID = Number(process.env.IMPINJ_LLRP_ROSPEC_ID || 123);
@@ -121,9 +190,9 @@ function markTagsPolled() {
 async function disconnectForIdle() {
     try {
         if (client?.socketWritable) {
-            await client.transact(new LLRPCore.STOP_ROSPEC({ data: { ROSpecID: ROSPEC_ID } }), TRANSACT_TIMEOUT_MS).catch(() => null);
-            await client.transact(new LLRPCore.DELETE_ROSPEC({ data: { ROSpecID: ROSPEC_ID } }), TRANSACT_TIMEOUT_MS).catch(() => null);
-            await client.transact(new LLRPCore.CLOSE_CONNECTION(), TRANSACT_TIMEOUT_MS).catch(() => null);
+            await transact(client, new LLRPCore.STOP_ROSPEC({ data: { ROSpecID: ROSPEC_ID } }), TRANSACT_TIMEOUT_MS).catch(() => null);
+            await transact(client, new LLRPCore.DELETE_ROSPEC({ data: { ROSpecID: ROSPEC_ID } }), TRANSACT_TIMEOUT_MS).catch(() => null);
+            await transact(client, new LLRPCore.CLOSE_CONNECTION(), TRANSACT_TIMEOUT_MS).catch(() => null);
             await client.disconnect().catch(() => {});
         }
     } catch {
@@ -256,7 +325,7 @@ exports.connect = async (req: any, res: any) => {
 exports.disconnect = async (req: any, res: any) => {
     try {
         if (client?.socketWritable) {
-            await client.transact(new LLRPCore.CLOSE_CONNECTION(), TRANSACT_TIMEOUT_MS).catch(() => null);
+            await transact(client, new LLRPCore.CLOSE_CONNECTION(), TRANSACT_TIMEOUT_MS).catch(() => null);
             await client.disconnect();
         }
     } catch (error: any) {
@@ -275,17 +344,17 @@ exports.start = async (req: any, res: any) => {
         // Clean slate — mirrors impinjController.ts's "stop first" pattern
         // for the .NET proxy: an already-added ROSpec from a prior session
         // (crash, restart) would otherwise make ADD_ROSPEC fail.
-        await reader.transact(new LLRPCore.DELETE_ROSPEC({ data: { ROSpecID: 0 } }), TRANSACT_TIMEOUT_MS);
+        await transact(reader, new LLRPCore.DELETE_ROSPEC({ data: { ROSpecID: 0 } }), TRANSACT_TIMEOUT_MS);
 
         const roSpec = buildRoSpec();
-        const addRsp = await reader.transact(new LLRPCore.ADD_ROSPEC().setROSpec(roSpec), TRANSACT_TIMEOUT_MS);
+        const addRsp = await transact(reader, new LLRPCore.ADD_ROSPEC().setROSpec(roSpec), TRANSACT_TIMEOUT_MS);
         const addStatus = addRsp?.getLLRPStatus?.()?.getStatusCode?.();
         if (addStatus && addStatus !== 'M_Success') {
             throw new Error(`ADD_ROSPEC failed: ${addStatus}`);
         }
 
-        await reader.transact(new LLRPCore.ENABLE_ROSPEC({ data: { ROSpecID: ROSPEC_ID } }), TRANSACT_TIMEOUT_MS);
-        const startRsp = await reader.transact(new LLRPCore.START_ROSPEC({ data: { ROSpecID: ROSPEC_ID } }), TRANSACT_TIMEOUT_MS);
+        await transact(reader, new LLRPCore.ENABLE_ROSPEC({ data: { ROSpecID: ROSPEC_ID } }), TRANSACT_TIMEOUT_MS);
+        const startRsp = await transact(reader, new LLRPCore.START_ROSPEC({ data: { ROSpecID: ROSPEC_ID } }), TRANSACT_TIMEOUT_MS);
         const startStatus = startRsp?.getLLRPStatus?.()?.getStatusCode?.();
         if (startStatus && startStatus !== 'M_Success') {
             throw new Error(`START_ROSPEC failed: ${startStatus}`);
@@ -308,8 +377,8 @@ exports.start = async (req: any, res: any) => {
 exports.stop = async (req: any, res: any) => {
     try {
         const reader = await ensureConnected();
-        await reader.transact(new LLRPCore.STOP_ROSPEC({ data: { ROSpecID: ROSPEC_ID } }), TRANSACT_TIMEOUT_MS);
-        await reader.transact(new LLRPCore.DELETE_ROSPEC({ data: { ROSpecID: ROSPEC_ID } }), TRANSACT_TIMEOUT_MS);
+        await transact(reader, new LLRPCore.STOP_ROSPEC({ data: { ROSpecID: ROSPEC_ID } }), TRANSACT_TIMEOUT_MS);
+        await transact(reader, new LLRPCore.DELETE_ROSPEC({ data: { ROSpecID: ROSPEC_ID } }), TRANSACT_TIMEOUT_MS);
     } catch (error: any) {
         recordError(error?.message || 'Could not stop the Impinj R700 reader over LLRP');
     } finally {
