@@ -173,6 +173,31 @@ function recordError(message: string) {
     lastErrorAtUtc = new Date().toISOString();
 }
 
+// llrpjs's disconnect() is just socket.end(callback) — Node only fires that
+// callback once the 'finish' event happens, which can simply never arrive
+// if the socket is already in a half-dead state (the reader stopped
+// responding, a stale TCP connection after a network blip, etc.). That left
+// stop()/disconnect() hanging forever with no way out even after the
+// transact() fix above, since this call has no timeout of its own. Race it
+// against one, then force-destroy the socket regardless — the goal is
+// freeing the reader's single LLRP slot, not a clean protocol teardown.
+async function closeClient() {
+    const old = client;
+    connected = false;
+    started = false;
+    if (!old) return;
+    try {
+        await Promise.race([old.disconnect(), new Promise((resolve) => setTimeout(resolve, 2000))]);
+    } catch {
+        // Fall through to destroy().
+    }
+    try {
+        old._tcp?.destroy?.();
+    } catch {
+        // Already gone.
+    }
+}
+
 // The R700 only accepts one LLRP client at a time. If the app that started
 // a read session stops calling /tags (closed, crashed, lost its network)
 // without ever calling /stop or /disconnect, the session would otherwise
@@ -193,8 +218,8 @@ async function disconnectForIdle() {
             await transact(client, new LLRPCore.STOP_ROSPEC({ data: { ROSpecID: ROSPEC_ID } }), TRANSACT_TIMEOUT_MS).catch(() => null);
             await transact(client, new LLRPCore.DELETE_ROSPEC({ data: { ROSpecID: ROSPEC_ID } }), TRANSACT_TIMEOUT_MS).catch(() => null);
             await transact(client, new LLRPCore.CLOSE_CONNECTION(), TRANSACT_TIMEOUT_MS).catch(() => null);
-            await client.disconnect().catch(() => {});
         }
+        await closeClient();
     } catch {
         // Best effort — the goal is freeing the reader's slot, not a clean
         // LLRP teardown; fall through to resetting local state regardless.
@@ -326,8 +351,8 @@ exports.disconnect = async (req: any, res: any) => {
     try {
         if (client?.socketWritable) {
             await transact(client, new LLRPCore.CLOSE_CONNECTION(), TRANSACT_TIMEOUT_MS).catch(() => null);
-            await client.disconnect();
         }
+        await closeClient();
     } catch (error: any) {
         recordError(error?.message || 'Could not disconnect from the Impinj R700 reader');
     } finally {
@@ -447,11 +472,7 @@ exports.updateSettings = async (req: any, res: any) => {
     const nextHost = typeof body.ipAddress === 'string' && body.ipAddress.trim() ? body.ipAddress.trim() : READER_HOST;
     const nextPort = Number(body.port) > 0 ? Number(body.port) : READER_PORT;
     if (nextHost !== READER_HOST || nextPort !== READER_PORT) {
-        if (client?.socketWritable) {
-            await client.disconnect().catch(() => {});
-        }
-        connected = false;
-        started = false;
+        await closeClient();
         READER_HOST = nextHost;
         READER_PORT = nextPort;
     }
