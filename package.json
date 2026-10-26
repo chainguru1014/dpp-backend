@@ -48,7 +48,6 @@
         "multer-gridfs-storage": "^5.0.2",
         "node-cron": "^3.0.2",
         "node-fetch": "^2.7.0",
-        "node-libcurl": "^2.3.3",
         "nodemailer": "^6.9.1",
         "nodemon": "^2.0.15",
         "prettier": "^2.8.1",
