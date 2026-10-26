@@ -11,12 +11,18 @@ const { deriveEntityCode } = require('../utils/idFormat');
 // verifyScannedCode), it's only a labeling distinction in the print dialog.
 const ALLOWED_IDENTIFIER_TYPES = ['qr', 'barcode', 'nfc', 'rfid', 'gs1dl'];
 
-// YYYYMMDD in UTC — matches the day boundary the daily ref-number sequence
-// resets on.
-const dateKeyFor = (date: Date): string => {
-    const y = date.getUTCFullYear();
-    const m = String(date.getUTCMonth() + 1).padStart(2, '0');
-    const d = String(date.getUTCDate()).padStart(2, '0');
+// YYYYMMDD in the capturing device's local day — the app sends its
+// Date.getTimezoneOffset() as tzOffset (JST = -540). Without it (older app
+// builds) this falls back to UTC, which split a Japanese morning's captures
+// into the previous day and hid them from "today".
+const dateKeyFor = (date: Date, tzOffset?: any): string => {
+    const offset = Number(tzOffset);
+    const local = Number.isFinite(offset) && Math.abs(offset) <= 14 * 60
+        ? new Date(date.getTime() - offset * 60000)
+        : date;
+    const y = local.getUTCFullYear();
+    const m = String(local.getUTCMonth() + 1).padStart(2, '0');
+    const d = String(local.getUTCDate()).padStart(2, '0');
     return `${y}${m}${d}`;
 };
 
@@ -40,7 +46,10 @@ exports.create = async (req: any, res: any, next: any) => {
         }
 
         const stepIndex = Number(req.body?.stepIndex);
-        const steps = company.processSteps || [];
+        // A company with no process steps yet still gets a single default
+        // step, so a worker's captures are recorded and counted instead of
+        // every one failing with "Invalid stepIndex".
+        const steps = company.processSteps?.length ? company.processSteps : [{ entity: company.name || '', type: 'general' }];
         if (!Number.isInteger(stepIndex) || stepIndex < 0 || stepIndex >= steps.length) {
             return next(new AppError(400, 'fail', 'Invalid stepIndex'), req, res, next);
         }
@@ -52,7 +61,7 @@ exports.create = async (req: any, res: any, next: any) => {
 
         const identifierType = ALLOWED_IDENTIFIER_TYPES.includes(req.body?.identifierType) ? req.body.identifierType : 'qr';
         const step = steps[stepIndex];
-        const dateKey = dateKeyFor(new Date());
+        const dateKey = dateKeyFor(new Date(), req.body?.tzOffset);
         const refCode = deriveEntityCode(step.entity);
 
         const seq = await getNextSequence(`ref:${company._id}:${stepIndex}:${dateKey}`);
@@ -164,7 +173,7 @@ exports.list = async (req: any, res: any, next: any) => {
         }
 
         if (req.query?.date === 'today' || req.query?.date === undefined) {
-            filter.dateKey = dateKeyFor(new Date());
+            filter.dateKey = dateKeyFor(new Date(), req.query?.tzOffset);
         } else if (req.query?.date && req.query.date !== 'all') {
             filter.dateKey = String(req.query.date);
         }

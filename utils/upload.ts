@@ -28,8 +28,8 @@ const upload = multer({
         fileSize: 10 * 1024 * 1024 // 10MB limit
     },
     fileFilter: (req: any, file: any, cb: any) => {
-        // Accept images only
-        const allowedMimes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp'];
+        // Images, plus PDFs for the product form's manuals and certificate files.
+        const allowedMimes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp', 'application/pdf'];
         if (allowedMimes.includes(file.mimetype)) {
             cb(null, true);
         } else {
@@ -38,4 +38,22 @@ const upload = multer({
     }
 });
 
+// Product videos (uploaded files, as an alternative to a YouTube link) —
+// same storage, video types only, sized to nginx's 100M body limit.
+const videoUpload = multer({
+    storage: storage,
+    limits: {
+        fileSize: 100 * 1024 * 1024
+    },
+    fileFilter: (req: any, file: any, cb: any) => {
+        const allowedMimes = ['video/mp4', 'video/webm', 'video/quicktime', 'video/ogg', 'video/x-m4v'];
+        if (allowedMimes.includes(file.mimetype)) {
+            cb(null, true);
+        } else {
+            cb(new Error('Invalid file type. Only MP4, WebM or MOV videos are allowed.'), false);
+        }
+    }
+});
+
 module.exports = upload;
+module.exports.videoUpload = videoUpload;

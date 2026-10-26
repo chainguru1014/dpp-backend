@@ -257,6 +257,11 @@ const productSchema = new mongoose.Schema({
     // products and apps keep working. Always read through
     // utils/circularity.normalizeCircularity.
     circularity: { type: mongoose.Schema.Types.Mixed, default: undefined },
+    // Videos per product-form step, shown on the matching app Lifecycle tab:
+    // { materials, care, dispose, traceability, warranty } — each a list of
+    // { url, description }, where url is a YouTube link or an uploaded
+    // video file (upload/video).
+    tabVideos: { type: mongoose.Schema.Types.Mixed, default: undefined },
     traceabilityEsg: {
         madeIn: { type: String, default: '' },
         // Explicit country of origin (Lifecycle > Traceability); falls back to madeIn.

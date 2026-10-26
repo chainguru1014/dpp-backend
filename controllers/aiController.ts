@@ -65,6 +65,43 @@ exports.chat = async (req: any, res: any) => {
 };
 
 // POST /recommendations — rank a brand's catalogue for a shopper using OpenAI.
+// POST /chat/transcribe — voice input for the chat: a short recording
+// (multipart field "audio") is turned into text by OpenAI speech-to-text.
+// Uses Node's own fetch/FormData (node-fetch v2 cannot send multipart).
+const TRANSCRIBE_URL = 'https://api.openai.com/v1/audio/transcriptions';
+const TRANSCRIBE_MODEL = process.env.OPENAI_TRANSCRIBE_MODEL || 'whisper-1';
+
+exports.transcribe = async (req: any, res: any) => {
+    try {
+        const key = process.env.OPENAI_API_KEY;
+        if (!key) {
+            return res.status(503).json({ status: 'error', message: 'AI is not configured. Set OPENAI_API_KEY on the server.' });
+        }
+        if (!req.file || !req.file.buffer?.length) {
+            return res.status(400).json({ status: 'fail', message: 'audio is required' });
+        }
+        const form = new FormData();
+        const name = req.file.originalname || 'speech.webm';
+        form.append('file', new Blob([req.file.buffer], { type: req.file.mimetype || 'audio/webm' }), name);
+        form.append('model', TRANSCRIBE_MODEL);
+        const language = String(req.body?.language || '').slice(0, 5);
+        if (/^[a-z]{2}$/.test(language)) form.append('language', language);
+        const resp = await (globalThis as any).fetch(TRANSCRIBE_URL, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${key}` },
+            body: form,
+        });
+        if (!resp.ok) {
+            console.error('OpenAI transcription failed:', resp.status, await resp.text());
+            return res.status(502).json({ status: 'error', message: `Transcription failed (${resp.status})` });
+        }
+        const data: any = await resp.json();
+        res.json({ status: 'success', text: String(data?.text || '').trim() });
+    } catch (err: any) {
+        res.status(500).json({ status: 'error', message: err.message });
+    }
+};
+
 exports.recommendations = async (req: any, res: any) => {
     try {
         const { ownerId, ownerKind, preferences } = req.body || {};

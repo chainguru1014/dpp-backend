@@ -8,6 +8,7 @@ const upload = require('../utils/upload');
 
 router.post('/single', upload.single('file'), uploadController.uploadSingle);
 router.post('/multiple', upload.array('files'), uploadController.uploadMultiple);
+router.post('/video', upload.videoUpload.single('file'), uploadController.uploadSingle);
 
 
 module.exports = router;
