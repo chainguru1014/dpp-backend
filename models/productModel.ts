@@ -102,6 +102,24 @@ const productSchema = new mongoose.Schema({
             default: ''
         }
     },
+    // Retail price shown in the consumer Cart / Purchase pages. Optional —
+    // a product without a price shows "price on request" there.
+    price: {
+        type: Number,
+        min: 0
+    },
+    currency: {
+        type: String,
+        default: 'EUR',
+        trim: true
+    },
+    // Where the consumer Purchase page's Buy button sends the shopper (the
+    // brand's own shop page for this item). Falls back to brandInfo.websiteUrl.
+    purchaseUrl: {
+        type: String,
+        default: '',
+        trim: true
+    },
     // Certifications shown on the Lifecycle > Materials and Compliance tabs.
     // Mixed so it accepts either the legacy array of names (strings) or
     // objects: { icon, title, content } plus the optional evidence fields

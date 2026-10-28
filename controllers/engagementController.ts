@@ -508,3 +508,94 @@ exports.sendBrandOrProductEmail = async (req: any, res: any, next: any) => {
         });
     }
 };
+
+// ---------------------------------------------------------------------------
+// Cart (consumer Add to Cart). Unlike the older engagement endpoints above,
+// these take the user from the bearer token (`protect`), never from a
+// client-supplied user_id.
+// ---------------------------------------------------------------------------
+const CartItem = require('../models/cartItemModel');
+
+const cartKey = (req: any, source: any) => {
+    const mongoose = require('mongoose');
+    const userId = req.user?.actorKind === 'User' ? toObjectIdIfValid(mongoose, req.user.id) : null;
+    const productId = toObjectIdIfValid(mongoose, source?.product_id);
+    const tokenId = source?.token_id != null && source?.token_id !== '' ? Number(source.token_id) : null;
+    return { userId, productId, tokenId: Number.isFinite(tokenId) ? tokenId : null };
+};
+
+// GET /engagement/cart/status?product_id=&token_id=
+exports.getCartStatus = async (req: any, res: any, next: any) => {
+    try {
+        const { userId, productId, tokenId } = cartKey(req, req.query);
+        if (!userId || !productId) {
+            return res.status(400).json({ status: 'fail', message: 'product_id is required' });
+        }
+        const doc = await CartItem.findOne({ user_id: userId, product_id: productId, token_id: tokenId });
+        return res.status(200).json({ status: 'success', added: !!doc });
+    } catch (error) {
+        next(error);
+    }
+};
+
+// POST /engagement/cart { product_id, token_id }
+exports.addCartItem = async (req: any, res: any, next: any) => {
+    try {
+        const { userId, productId, tokenId } = cartKey(req, req.body);
+        if (!userId || !productId) {
+            return res.status(400).json({ status: 'fail', message: 'product_id is required' });
+        }
+        await CartItem.findOneAndUpdate(
+            { user_id: userId, product_id: productId, token_id: tokenId },
+            { user_id: userId, product_id: productId, token_id: tokenId },
+            { upsert: true, new: true, setDefaultsOnInsert: true }
+        );
+        return res.status(200).json({ status: 'success', added: true });
+    } catch (error) {
+        next(error);
+    }
+};
+
+// DELETE /engagement/cart { product_id, token_id }
+exports.removeCartItem = async (req: any, res: any, next: any) => {
+    try {
+        const { userId, productId, tokenId } = cartKey(req, req.body);
+        if (!userId || !productId) {
+            return res.status(400).json({ status: 'fail', message: 'product_id is required' });
+        }
+        await CartItem.findOneAndDelete({ user_id: userId, product_id: productId, token_id: tokenId });
+        return res.status(200).json({ status: 'success', added: false });
+    } catch (error) {
+        next(error);
+    }
+};
+
+// GET /engagement/cart — the signed-in user's cart, newest first, each row
+// carrying the live product (name/images/brand/price/purchaseUrl).
+exports.listCartItems = async (req: any, res: any, next: any) => {
+    try {
+        const { userId } = cartKey(req, {});
+        if (!userId) {
+            return res.status(400).json({ status: 'fail', message: 'Only user accounts have a cart' });
+        }
+        const docs = await runWithDbRetry(() => CartItem.find({ user_id: userId }).sort({ updatedAt: -1 }).lean());
+        const Product = require('../models/productModel');
+        const ids = Array.from(new Set(docs.map((d: any) => String(d.product_id))));
+        const products = ids.length
+            ? await Product.find(
+                { _id: { $in: ids } },
+                { name: 1, model: 1, images: 1, videos: 1, brandInfo: 1, token_id: 1, price: 1, currency: 1, purchaseUrl: 1 }
+            ).lean()
+            : [];
+        const byId = new Map(products.map((p: any) => [String(p._id), p]));
+        const data = docs
+            .map((d: any) => ({ ...d, product: byId.get(String(d.product_id)) || null }))
+            .filter((d: any) => d.product);
+        return res.status(200).json({ status: 'success', data });
+    } catch (error) {
+        if (isPoolDestroyedError(error)) {
+            return res.status(503).json({ status: 'error', message: 'Database connection is temporarily unavailable. Please try again.' });
+        }
+        next(error);
+    }
+};

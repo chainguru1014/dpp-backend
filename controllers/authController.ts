@@ -459,6 +459,22 @@ exports.completeProfile = async (req: any, res: any, next: any) => {
             return res.status(400).json({ status: 'fail', message: 'Invalid user type' });
         }
 
+        // Face signups arrive with no email at all — the profile page asks for
+        // one so the account still has a recovery/contact channel.
+        if (!user.email && user.signupMethod === 'face' && !email) {
+            return res.status(400).json({ status: 'fail', message: 'Email is required' });
+        }
+        if (email) {
+            const normalized = normalizeEmail(email);
+            if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)) {
+                return res.status(400).json({ status: 'fail', message: 'Please enter a valid email address' });
+            }
+            const owner = await User.findOne({ email: normalized, _id: { $ne: user._id } });
+            if (owner) {
+                return res.status(409).json({ status: 'fail', message: 'This email is already used by another account' });
+            }
+        }
+
         if (name) {
             const normalizedName = normalizeUsername(name);
             if (normalizedName) user.name = normalizedName;
@@ -561,6 +577,198 @@ exports.aiConciergeConsent = async (req: any, res: any, next: any) => {
             user: buildUserResponse(user),
             message: 'Preference saved'
         });
+    } catch (error) {
+        next(error);
+    }
+};
+
+// ---------------------------------------------------------------------------
+// Face sign-in (FACEIO, https://faceio.net). The fio.js widget in the app
+// does the camera capture, face matching and (on FACEIO's Pro plan and up)
+// anti-spoofing; it hands the app a Facial ID. That ID alone proves nothing
+// — anyone could post a copied one — so before trusting it the backend
+// confirms it with FACEIO itself, using whichever of these is configured:
+//
+//   FACEIO_WEBHOOK_TOKEN  FACEIO posts an ENROLL/AUTH event to
+//                         POST /auth/face/webhook for every real enroll/
+//                         authenticate. Sign-in then requires a fresh,
+//                         unused event for that Facial ID (one event = one
+//                         sign-in), which is what makes a copied ID useless.
+//   FACEIO_API_KEY        REST `checkfacialid` — confirms the ID is enrolled
+//                         in our FACEIO application (paid plans only).
+//
+// With neither set, face sign-in is refused unless FACEIO_ALLOW_UNVERIFIED
+// is 'true' — a local-testing escape hatch that must stay off in production.
+// ---------------------------------------------------------------------------
+const FaceEvent = require('../models/faceEventModel');
+const jwtLib = require('jsonwebtoken');
+
+const FACE_EVENT_MAX_AGE_MS = 2 * 60 * 1000;
+const FACE_EVENT_WAIT_MS = 6000;
+const FACE_SIGNUP_TICKET_PURPOSE = 'face-signup';
+
+const isValidFacialId = (v: any) => typeof v === 'string' && /^[A-Za-z0-9._:-]{8,200}$/.test(v);
+
+const checkFacialIdWithRest = async (facialId: string) => {
+    const fetchFn = require('node-fetch');
+    const url = `https://api.faceio.net/checkfacialid?fid=${encodeURIComponent(facialId)}&key=${encodeURIComponent(process.env.FACEIO_API_KEY || '')}`;
+    const r = await fetchFn(url, { timeout: 8000 });
+    const j: any = await r.json().catch(() => ({}));
+    return r.ok && j?.valid === true;
+};
+
+// Waits briefly for the matching webhook — FACEIO sends it at about the same
+// moment fio.js resolves in the browser, so it can land a beat after the
+// app's own request.
+const consumeFaceEvent = async (facialId: string, eventName: 'ENROLL' | 'AUTH') => {
+    const deadline = Date.now() + FACE_EVENT_WAIT_MS;
+    for (;;) {
+        const ev = await FaceEvent.findOneAndUpdate(
+            {
+                facialId,
+                eventName,
+                consumedAt: { $exists: false },
+                createdAt: { $gte: new Date(Date.now() - FACE_EVENT_MAX_AGE_MS) }
+            },
+            { $set: { consumedAt: new Date() } },
+            { sort: { createdAt: -1 }, new: true }
+        );
+        if (ev) return true;
+        if (Date.now() >= deadline) return false;
+        await new Promise((r) => setTimeout(r, 750));
+    }
+};
+
+/** Returns null when the Facial ID checks out, otherwise an error message. */
+const verifyFacialId = async (facialId: string, eventName: 'ENROLL' | 'AUTH') => {
+    const useWebhook = !!process.env.FACEIO_WEBHOOK_TOKEN;
+    const useRest = !!process.env.FACEIO_API_KEY;
+    if (!useWebhook && !useRest) {
+        return process.env.FACEIO_ALLOW_UNVERIFIED === 'true' ? null : 'Face sign-in is not configured on the server';
+    }
+    if (useRest && !(await checkFacialIdWithRest(facialId))) {
+        return 'Face not recognised';
+    }
+    if (useWebhook && !(await consumeFaceEvent(facialId, eventName))) {
+        return 'Face check could not be confirmed. Please try again.';
+    }
+    return null;
+};
+
+// POST /auth/face/signup/start — step 1 of face signup: creates the (still
+// incomplete) account and returns its id for fio.js enroll()'s payload, plus
+// a short-lived ticket that only /face/signup/complete accepts.
+exports.faceSignupStart = async (req: any, res: any, next: any) => {
+    try {
+        const user = await User.create({
+            role: 'User',
+            userType: 'client',
+            isApproved: false,
+            profileCompleted: false,
+            signupMethod: 'face'
+        });
+        const ticket = jwtLib.sign(
+            { id: String(user._id), purpose: FACE_SIGNUP_TICKET_PURPOSE },
+            process.env.JWT_SECRET,
+            { expiresIn: '15m' }
+        );
+        return res.status(200).json({ status: 'success', userId: String(user._id), signupTicket: ticket });
+    } catch (error) {
+        next(error);
+    }
+};
+
+// POST /auth/face/signup/complete { signupTicket, facialId } — step 2: after
+// fio.js enroll() succeeded, attach the confirmed Facial ID to the account
+// and start the session (profileCompleted is still false, so the app shows
+// the profile page next).
+exports.faceSignupComplete = async (req: any, res: any, next: any) => {
+    try {
+        const { signupTicket, facialId } = req.body || {};
+        if (!signupTicket || !isValidFacialId(facialId)) {
+            return res.status(400).json({ status: 'fail', message: 'signupTicket and facialId are required' });
+        }
+        let decoded: any;
+        try {
+            decoded = jwtLib.verify(signupTicket, process.env.JWT_SECRET);
+        } catch (err) {
+            return res.status(401).json({ status: 'fail', message: 'Signup expired. Please start again.' });
+        }
+        if (decoded?.purpose !== FACE_SIGNUP_TICKET_PURPOSE) {
+            return res.status(401).json({ status: 'fail', message: 'Invalid signup ticket' });
+        }
+
+        const verifyError = await verifyFacialId(facialId, 'ENROLL');
+        if (verifyError) {
+            return res.status(401).json({ status: 'fail', message: verifyError });
+        }
+
+        const taken = await User.findOne({ faceioFacialId: facialId, _id: { $ne: decoded.id } });
+        if (taken) {
+            return res.status(409).json({ status: 'fail', message: 'This face is already registered. Please sign in instead.' });
+        }
+
+        const user = await User.findById(decoded.id);
+        if (!user) {
+            return res.status(404).json({ status: 'fail', message: 'Signup expired. Please start again.' });
+        }
+        if (user.faceioFacialId && user.faceioFacialId !== facialId) {
+            return res.status(409).json({ status: 'fail', message: 'This account already has a face registered' });
+        }
+        user.faceioFacialId = facialId;
+        await user.save();
+
+        const token = signJwt({ id: user._id, name: user.name, actorKind: 'User' });
+        return sendAuthResponse(res, { actorKind: 'User', actor: user, token }, req);
+    } catch (error) {
+        next(error);
+    }
+};
+
+// POST /auth/face/login { facialId } — after fio.js authenticate() matched a
+// face, confirm it with FACEIO and sign in the account it belongs to.
+exports.faceLogin = async (req: any, res: any, next: any) => {
+    try {
+        const { facialId } = req.body || {};
+        if (!isValidFacialId(facialId)) {
+            return res.status(400).json({ status: 'fail', message: 'facialId is required' });
+        }
+        const verifyError = await verifyFacialId(facialId, 'AUTH');
+        if (verifyError) {
+            return res.status(401).json({ status: 'fail', message: verifyError });
+        }
+        const user = await User.findOne({ faceioFacialId: facialId });
+        if (!user) {
+            return res.status(404).json({ status: 'fail', message: 'No account uses this face yet. Please sign up first.' });
+        }
+        const token = signJwt({ id: user._id, name: user.name, actorKind: 'User' });
+        return sendAuthResponse(res, { actorKind: 'User', actor: user, token }, req);
+    } catch (error) {
+        next(error);
+    }
+};
+
+// POST /auth/face/webhook — FACEIO's ENROLL / AUTH / DELETION callback.
+// FACEIO authenticates itself with `WWW-Authenticate: Bearer <token key>`
+// (the token shown in its Application Manager), not an HMAC signature.
+exports.faceWebhook = async (req: any, res: any, next: any) => {
+    try {
+        const expected = process.env.FACEIO_WEBHOOK_TOKEN;
+        const header = String(req.headers?.['www-authenticate'] || req.headers?.authorization || '');
+        const presented = header.replace(/^Bearer\s+/i, '').trim();
+        if (!expected || presented !== expected) {
+            return res.status(401).json({ status: 'fail' });
+        }
+        const { eventName, facialId, clientIp, payload } = req.body || {};
+        if (!isValidFacialId(facialId) || !eventName) {
+            return res.status(400).json({ status: 'fail' });
+        }
+        if (eventName === 'DELETION') {
+            await User.updateOne({ faceioFacialId: facialId }, { $unset: { faceioFacialId: 1 } });
+        } else if (eventName === 'ENROLL' || eventName === 'AUTH') {
+            await FaceEvent.create({ eventName, facialId, clientIp: clientIp || '', payload });
+        }
+        return res.status(200).json({ status: 'success' });
     } catch (error) {
         next(error);
     }

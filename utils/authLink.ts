@@ -83,7 +83,8 @@ const findOrLinkOrCreateByEmail = async ({ email, provider, providerId, profileH
         userType: 'client',
         isApproved: false,
         profileCompleted: false,
-        emailVerified: true
+        emailVerified: true,
+        signupMethod: provider === 'otp' ? 'email' : provider
     };
     if (profileHints?.avatar) newUserData.avatar = profileHints.avatar;
     if (profileHints?.firstName) newUserData.firstName = profileHints.firstName;

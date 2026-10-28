@@ -52,6 +52,7 @@ const buildUserResponse = (user: any) => ({
     addressCountry: user.addressCountry,
     phoneNumber: user.phoneNumber,
     profileCompleted: user.profileCompleted,
+    signupMethod: user.signupMethod,
     aiConciergeConsent: user.aiConciergeConsent,
     aiConciergeConsentAt: user.aiConciergeConsentAt
 });
