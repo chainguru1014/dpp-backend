@@ -56,40 +56,37 @@ for i in $(seq 1 120); do
   if curl -fs -o /dev/null "$CF_URL/"; then break; fi
   sleep 5
 done
-# admin service needs a little longer than the UI
-sleep 20
-
 ADMIN_PASS_FILE="$CF_DIR/.admin-password"
 if [ ! -f "$ADMIN_PASS_FILE" ]; then
   openssl rand -hex 16 > "$ADMIN_PASS_FILE"
   chmod 600 "$ADMIN_PASS_FILE"
 fi
 ADMIN_PASS="$(cat "$ADMIN_PASS_FILE")"
+JAR="$(mktemp)"
+trap 'rm -f "$JAR"' EXIT
 
+# The admin service starts a while after the UI answers — keep trying to
+# register/log in for up to ~5 minutes. Login is cookie based (CFSESSION).
 echo "==> Creating admin user, app and recognition service"
-curl -fs -o /dev/null -X POST "$CF_URL/admin/user/register" \
-  -H 'Content-Type: application/json' \
-  -d "{\"email\":\"$ADMIN_EMAIL\",\"password\":\"$ADMIN_PASS\",\"firstName\":\"Yometel\",\"lastName\":\"Admin\",\"isAllowStatistics\":false}" \
-  || echo "   (admin user probably exists already)"
+for i in $(seq 1 60); do
+  curl -s -o /dev/null -X POST "$CF_URL/admin/user/register"     -H 'Content-Type: application/json'     -d "{\"email\":\"$ADMIN_EMAIL\",\"password\":\"$ADMIN_PASS\",\"firstName\":\"Yometel\",\"lastName\":\"Admin\",\"isAllowStatistics\":false}" || true
+  if curl -fs -c "$JAR" -o /dev/null -X POST "$CF_URL/admin/oauth/token"       -H 'Authorization: Basic Q29tbW9uQ2xpZW50SWQ6cGFzc3dvcmQ='       --data-urlencode "username=$ADMIN_EMAIL" --data-urlencode "password=$ADMIN_PASS"       --data-urlencode 'grant_type=password'; then break; fi
+  sleep 5
+done
+APPS="$(curl -fs -b "$JAR" "$CF_URL/admin/apps")" || { echo "Could not log in to the CompreFace admin API."; exit 1; }
 
-TOKEN="$(curl -fs -X POST "$CF_URL/admin/oauth/token" \
-  -H 'Authorization: Basic Q29tbW9uQ2xpZW50SWQ6cGFzc3dvcmQ=' \
-  --data-urlencode "username=$ADMIN_EMAIL" \
-  --data-urlencode "password=$ADMIN_PASS" \
-  --data-urlencode 'grant_type=password' | sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p')"
-[ -n "$TOKEN" ] || { echo "Could not log in to the CompreFace admin API. Open the UI through an SSH tunnel (ssh -L 8000:127.0.0.1:8000 ...) and create a Recognition service by hand."; exit 1; }
+# The built-in "Demo app" ships with publicly known API keys — remove it.
+for D in $(echo "$APPS" | python3 -c 'import sys,json;[print(a["id"]) for a in json.load(sys.stdin) if a["name"]=="Demo app"]'); do
+  curl -fs -o /dev/null -b "$JAR" -X DELETE "$CF_URL/admin/app/$D"
+done
 
-APP_ID="$(curl -fs "$CF_URL/admin/apps" -H "Authorization: Bearer $TOKEN" | sed -n 's/.*"id":"\([^"]*\)","name":"DPP".*/\1/p')"
+APP_ID="$(echo "$APPS" | python3 -c 'import sys,json;a=[x for x in json.load(sys.stdin) if x["name"]=="DPP"];print(a[0]["id"] if a else "")')"
 if [ -z "$APP_ID" ]; then
-  APP_ID="$(curl -fs -X POST "$CF_URL/admin/app" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-    -d '{"name":"DPP"}' | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')"
+  APP_ID="$(curl -fs -b "$JAR" -X POST "$CF_URL/admin/app" -H 'Content-Type: application/json' -d '{"name":"DPP"}'     | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')"
 fi
-[ -n "$APP_ID" ] || { echo "Could not create the CompreFace app."; exit 1; }
-
-API_KEY="$(curl -fs "$CF_URL/admin/app/$APP_ID/models" -H "Authorization: Bearer $TOKEN" | sed -n 's/.*"apiKey":"\([^"]*\)","name":"face-login".*/\1/p')"
+API_KEY="$(curl -fs -b "$JAR" "$CF_URL/admin/app/$APP_ID/models"   | python3 -c 'import sys,json;m=[x for x in json.load(sys.stdin) if x.get("name")=="face-login"];print(m[0]["apiKey"] if m else "")')"
 if [ -z "$API_KEY" ]; then
-  API_KEY="$(curl -fs -X POST "$CF_URL/admin/app/$APP_ID/model" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-    -d '{"name":"face-login","type":"RECOGNITION"}' | sed -n 's/.*"apiKey":"\([^"]*\)".*/\1/p')"
+  API_KEY="$(curl -fs -b "$JAR" -X POST "$CF_URL/admin/app/$APP_ID/model" -H 'Content-Type: application/json'     -d '{"name":"face-login","type":"RECOGNITION"}' | python3 -c 'import sys,json;print(json.load(sys.stdin)["apiKey"])')"
 fi
 [ -n "$API_KEY" ] || { echo "Could not create the recognition service."; exit 1; }
 
