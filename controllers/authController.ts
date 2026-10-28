@@ -589,6 +589,9 @@ exports.aiConciergeConsent = async (req: any, res: any, next: any) => {
 // server, so a modified app can't just claim "this is user X".
 // ---------------------------------------------------------------------------
 const CompreFace = require('../utils/compreface');
+const fs = require('fs');
+const path = require('path');
+const uniqid = require('uniqid');
 
 const FACE_ERRORS: Record<string, { status: number; message: string }> = {
     notConfigured: { status: 503, message: 'Face sign-in is not configured on the server' },
@@ -632,6 +635,15 @@ exports.faceSignup = async (req: any, res: any, next: any) => {
             return faceFail(res, added.error);
         }
         user.faceEnrolledAt = new Date();
+        // The signup photo also becomes the profile picture (same uploads
+        // folder + bare-filename convention as /upload/single).
+        try {
+            const filename = `${Date.now()}${uniqid()}.jpg`;
+            fs.writeFileSync(path.join(__dirname, '../uploads', filename), Buffer.from(b64, 'base64'));
+            user.avatar = filename;
+        } catch (err) {
+            console.error('Saving face avatar failed:', err);
+        }
         await user.save();
 
         const token = signJwt({ id: user._id, name: user.name, actorKind: 'User' });

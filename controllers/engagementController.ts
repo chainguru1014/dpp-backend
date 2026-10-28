@@ -299,8 +299,17 @@ exports.listAlbumItems = async (req: any, res: any, next: any) => {
         if (!userId) {
             return res.status(400).json({ status: 'fail', message: 'user_id is required' });
         }
-        const docs = await runWithDbRetry(() => AlbumItem.find({ user_id: userId }).sort({ updatedAt: -1 }));
-        return res.status(200).json({ status: 'success', data: docs });
+        // Newest save first. Each row also carries the live product's price /
+        // name / images / brand so the Product Album can show and filter them.
+        const docs = await runWithDbRetry(() => AlbumItem.find({ user_id: userId }).sort({ createdAt: -1 }).lean());
+        const Product = require('../models/productModel');
+        const ids = Array.from(new Set(docs.map((d: any) => String(d.product_id))));
+        const products = ids.length
+            ? await Product.find({ _id: { $in: ids } }, { name: 1, model: 1, images: 1, brandInfo: 1, price: 1, currency: 1, purchaseUrl: 1 }).lean()
+            : [];
+        const byId = new Map(products.map((p: any) => [String(p._id), p]));
+        const data = docs.map((d: any) => ({ ...d, product: byId.get(String(d.product_id)) || null }));
+        return res.status(200).json({ status: 'success', data });
     } catch (error) {
         if (isPoolDestroyedError(error)) {
             return res.status(503).json({ status: 'error', message: 'Database connection is temporarily unavailable. Please try again.' });
