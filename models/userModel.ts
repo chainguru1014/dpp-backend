@@ -140,12 +140,10 @@ const userSchema = new mongoose.Schema({
         type: Boolean,
         default: false
     },
-    // FACEIO facial ID (fio.js enroll()) for face sign-in. Opaque, issued by
-    // FACEIO — no biometric data is stored here, only this identifier.
-    faceioFacialId: {
-        type: String,
-        unique: true,
-        sparse: true
+    // Set once this user's face is enrolled for face sign-in. The face
+    // embedding itself lives in CompreFace (subject = this user's _id), not here.
+    faceEnrolledAt: {
+        type: Date
     },
     // Which method created the account (face / google / apple / email).
     signupMethod: {

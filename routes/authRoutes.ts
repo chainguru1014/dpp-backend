@@ -24,12 +24,10 @@ router.post('/apple', AuthController.apple);
 router.post('/otp/request', otpRequestLimiter, AuthController.otpRequest);
 router.post('/signup/otp/request', otpRequestLimiter, AuthController.signupOtpRequest);
 router.post('/otp/verify', otpVerifyLimiter, AuthController.otpVerify);
-// Face sign-in (FACEIO). Signup start creates an account, so it shares the
-// OTP request limiter's tight budget.
-router.post('/face/signup/start', otpRequestLimiter, AuthController.faceSignupStart);
-router.post('/face/signup/complete', otpVerifyLimiter, AuthController.faceSignupComplete);
+// Face sign-in (self-hosted CompreFace). Signup creates an account, so it
+// shares the OTP request limiter's tight budget.
+router.post('/face/signup', otpRequestLimiter, AuthController.faceSignup);
 router.post('/face/login', otpVerifyLimiter, AuthController.faceLogin);
-router.post('/face/webhook', AuthController.faceWebhook);
 router.post('/profile/complete', protect, AuthController.completeProfile);
 router.post('/device-token', protect, AuthController.registerDeviceToken);
 router.post('/ai-concierge-consent', protect, AuthController.aiConciergeConsent);
