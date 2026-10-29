@@ -182,8 +182,16 @@ exports.list = async (req: any, res: any, next: any) => {
             filter.flagged = true;
         }
 
-        const limit = req.user.actorKind === 'Company' ? 1000 : 200;
-        let docs: any[] = await CaptureRecord.find(filter).sort({ capturedAt: -1 }).limit(limit).lean();
+        // Optional paging (?skip=&limit=) for lists that load as they scroll;
+        // without it the newest rows up to the cap are returned, as before.
+        const cap = req.user.actorKind === 'Company' ? 1000 : 200;
+        const pageLimit = Number(req.query?.limit);
+        const paged = Number.isInteger(pageLimit) && pageLimit > 0;
+        const limit = paged ? Math.min(pageLimit, cap) : cap;
+        const skip = paged ? Math.max(0, Number(req.query?.skip) || 0) : 0;
+        let docs: any[] = await CaptureRecord.find(filter).sort({ capturedAt: -1 }).skip(skip).limit(paged ? limit + 1 : limit).lean();
+        const hasMore = paged && docs.length > limit;
+        if (hasMore) docs = docs.slice(0, limit);
 
         // Super admin spans companies — tag each capture with its company name.
         if (isSuper && docs.length) {
@@ -195,7 +203,7 @@ exports.list = async (req: any, res: any, next: any) => {
 
         res.status(200).json({
             status: 'success',
-            data: { docs }
+            data: { docs, hasMore }
         });
     } catch (error) {
         next(error);
