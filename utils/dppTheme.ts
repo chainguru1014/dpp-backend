@@ -7,10 +7,10 @@
 // Lifecycle tabs: one per tab of the app's Product Lifecycle screen.
 const DPP_SECTIONS = [
     { key: 'journey', on: true },
-    { key: 'care', on: true },
     { key: 'materials', on: true },
     { key: 'dispose', on: true },
     { key: 'traceability', on: true },
+    { key: 'care', on: true },
     { key: 'compliance', on: true }
 ];
 // Blocks of the Product Overview screen; `on` = shown in the standard look.
