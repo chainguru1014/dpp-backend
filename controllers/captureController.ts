@@ -1,6 +1,8 @@
 const Company = require('../models/companyModel');
 const Employee = require('../models/employeeModel');
 const CaptureRecord = require('../models/captureRecordModel');
+const Product = require('../models/productModel');
+const mongoose = require('mongoose');
 const AppError = require('../utils/appError');
 const { getNextSequence } = require('../models/counterModel');
 const { deriveEntityCode } = require('../utils/idFormat');
@@ -192,6 +194,15 @@ exports.list = async (req: any, res: any, next: any) => {
         let docs: any[] = await CaptureRecord.find(filter).sort({ capturedAt: -1 }).skip(skip).limit(paged ? limit + 1 : limit).lean();
         const hasMore = paged && docs.length > limit;
         if (hasMore) docs = docs.slice(0, limit);
+
+        // What the app's capture card and review rows show for each capture.
+        const productIds = [...new Set(docs.map((d) => d.productId).filter((id) => mongoose.Types.ObjectId.isValid(id)))];
+        if (productIds.length) {
+            const products = await Product.find({ _id: { $in: productIds } }).select('name images price currency').lean();
+            const byId: any = {};
+            products.forEach((p: any) => { byId[String(p._id)] = { name: p.name || '', images: p.images, price: p.price, currency: p.currency }; });
+            docs = docs.map((d) => ({ ...d, product: byId[d.productId] || null }));
+        }
 
         // Super admin spans companies — tag each capture with its company name.
         if (isSuper && docs.length) {
