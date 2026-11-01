@@ -116,13 +116,13 @@ exports.listMine = async (req: any, res: any, next: any) => {
     }
 };
 
-/** PUT /circular/requests/:id/cancel — the shopper withdraws a request the brand has not started. */
+/** PUT /circular/requests/:id/cancel — the shopper withdraws a request the brand has not accepted yet. */
 exports.cancelMine = async (req: any, res: any, next: any) => {
     try {
         if (!isId(req.params.id)) return next(new AppError(404, 'fail', 'Request not found.'));
         const doc = await CircularRequest.findOne({ _id: req.params.id, user_id: req.user.id });
         if (!doc) return next(new AppError(404, 'fail', 'Request not found.'));
-        if (!['new', 'accepted'].includes(doc.status)) {
+        if (doc.status !== 'new') {
             return next(new AppError(400, 'fail', 'This request can no longer be cancelled.'));
         }
         doc.status = 'cancelled';
