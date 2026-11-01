@@ -198,9 +198,9 @@ exports.list = async (req: any, res: any, next: any) => {
         // What the app's capture card and review rows show for each capture.
         const productIds = [...new Set(docs.map((d) => d.productId).filter((id) => mongoose.Types.ObjectId.isValid(id)))];
         if (productIds.length) {
-            const products = await Product.find({ _id: { $in: productIds } }).select('name images price currency').lean();
+            const products = await Product.find({ _id: { $in: productIds } }).select('name images color size').lean();
             const byId: any = {};
-            products.forEach((p: any) => { byId[String(p._id)] = { name: p.name || '', images: p.images, price: p.price, currency: p.currency }; });
+            products.forEach((p: any) => { byId[String(p._id)] = { name: p.name || '', images: p.images, color: p.color || '', size: p.size || '' }; });
             docs = docs.map((d) => ({ ...d, product: byId[d.productId] || null }));
         }
 
