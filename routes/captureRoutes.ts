@@ -8,6 +8,7 @@ const { protect, restrictTo } = require('../middleware/authMiddleware');
 // company for the super admin) — see CaptureController.list.
 router.get('/', protect, restrictTo('Employee', 'Company'), CaptureController.list);
 router.get('/count', protect, restrictTo('Employee', 'Company'), CaptureController.count);
+router.get('/stats', protect, restrictTo('Employee', 'Company'), CaptureController.stats);
 router.post('/', protect, restrictTo('Employee'), CaptureController.create);
 router.patch('/:id/flag', protect, restrictTo('Employee'), CaptureController.toggleFlag);
 

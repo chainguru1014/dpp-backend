@@ -160,6 +160,55 @@ exports.count = async (req: any, res: any, next: any) => {
     }
 };
 
+// GET /captures/stats — dashboard charts for the requester's scope: captures
+// per day (last 30 days) and per country. A capture's place is an address like
+// "Frankfurt, DE", resolved in the app.
+exports.stats = async (req: any, res: any, next: any) => {
+    try {
+        const { company, filter } = await resolveReadScope(req);
+        if (!company) {
+            return next(new AppError(404, 'fail', 'No company found for this account'), req, res, next);
+        }
+        const docs = await CaptureRecord.find(filter).select('capturedAt location.address').lean();
+
+        const DAYS = 30;
+        const since = new Date();
+        since.setHours(0, 0, 0, 0);
+        since.setDate(since.getDate() - (DAYS - 1));
+        const dayMap: any = {};
+        const countryMap: any = {};
+        const regionNames = new (Intl as any).DisplayNames(['en'], { type: 'region' });
+        docs.forEach((d: any) => {
+            if (d.capturedAt && new Date(d.capturedAt) >= since) {
+                const key = new Date(d.capturedAt).toISOString().slice(0, 10);
+                dayMap[key] = (dayMap[key] || 0) + 1;
+            }
+            const code = (String(d.location?.address || '').split(',').pop() || '').trim();
+            if (!code) return;
+            let country = code;
+            try {
+                country = regionNames.of(code.toUpperCase()) || code;
+            } catch (e) {
+                // Not a two-letter code: keep the address's own text.
+            }
+            countryMap[country] = (countryMap[country] || 0) + 1;
+        });
+        const capturesByDay: any[] = [];
+        for (let i = 0; i < DAYS; i++) {
+            const dt = new Date(since);
+            dt.setDate(since.getDate() + i);
+            const key = dt.toISOString().slice(0, 10);
+            capturesByDay.push({ date: key, count: dayMap[key] || 0 });
+        }
+        const countryBreakdown = Object.keys(countryMap)
+            .map((country) => ({ country, count: countryMap[country] }))
+            .sort((a, b) => b.count - a.count);
+        res.status(200).json({ status: 'success', data: { capturesByDay, countryBreakdown } });
+    } catch (error) {
+        next(error);
+    }
+};
+
 exports.list = async (req: any, res: any, next: any) => {
     try {
         const { company, isSuper, filter } = await resolveReadScope(req);
