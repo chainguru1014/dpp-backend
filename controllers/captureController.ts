@@ -160,8 +160,8 @@ exports.count = async (req: any, res: any, next: any) => {
     }
 };
 
-// GET /captures/stats — dashboard charts for the requester's scope: captures
-// per day (last 30 days) and per country. A capture's place is an address like
+// GET /captures/stats — dashboard figures for the requester's scope: totals,
+// captures per day (last 30 days) and per country. A capture's place is an address like
 // "Frankfurt, DE", resolved in the app.
 exports.stats = async (req: any, res: any, next: any) => {
     try {
@@ -169,7 +169,7 @@ exports.stats = async (req: any, res: any, next: any) => {
         if (!company) {
             return next(new AppError(404, 'fail', 'No company found for this account'), req, res, next);
         }
-        const docs = await CaptureRecord.find(filter).select('capturedAt location.address').lean();
+        const docs = await CaptureRecord.find(filter).select('capturedAt location.address productId rawValue').lean();
 
         const DAYS = 30;
         const since = new Date();
@@ -177,8 +177,12 @@ exports.stats = async (req: any, res: any, next: any) => {
         since.setDate(since.getDate() - (DAYS - 1));
         const dayMap: any = {};
         const countryMap: any = {};
+        const products = new Set();
+        const codes = new Set();
         const regionNames = new (Intl as any).DisplayNames(['en'], { type: 'region' });
         docs.forEach((d: any) => {
+            if (d.productId) products.add(String(d.productId));
+            if (d.rawValue) codes.add(d.rawValue);
             if (d.capturedAt && new Date(d.capturedAt) >= since) {
                 const key = new Date(d.capturedAt).toISOString().slice(0, 10);
                 dayMap[key] = (dayMap[key] || 0) + 1;
@@ -203,7 +207,7 @@ exports.stats = async (req: any, res: any, next: any) => {
         const countryBreakdown = Object.keys(countryMap)
             .map((country) => ({ country, count: countryMap[country] }))
             .sort((a, b) => b.count - a.count);
-        res.status(200).json({ status: 'success', data: { capturesByDay, countryBreakdown } });
+        res.status(200).json({ status: 'success', data: { total: docs.length, uniqueProducts: products.size, uniqueCodes: codes.size, capturesByDay, countryBreakdown } });
     } catch (error) {
         next(error);
     }
