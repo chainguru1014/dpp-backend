@@ -1,4 +1,5 @@
 const express = require('express');
+import type { Request, Response } from 'express';
 const rateLimit = require('express-rate-limit');
 const router = express.Router();
 const AuthController = require('../controllers/authController');
@@ -21,6 +22,8 @@ const otpVerifyLimiter = rateLimit({
 
 router.post('/google', AuthController.google);
 router.post('/apple', AuthController.apple);
+// Return URL for Apple's web sign-in on Android; the app reads the result itself.
+router.all('/apple/callback', (_req: Request, res: Response) => res.type('html').send('<!doctype html><title>Sign in with Apple</title><p>Returning to the app…</p>'));
 router.post('/otp/request', otpRequestLimiter, AuthController.otpRequest);
 router.post('/signup/otp/request', otpRequestLimiter, AuthController.signupOtpRequest);
 router.post('/otp/verify', otpVerifyLimiter, AuthController.otpVerify);
