@@ -16,6 +16,12 @@
 // ordinary "reader didn't answer" case — see CorporateScannerScreen.tsx's
 // `if (!status.isConnected) throw new Error(status.lastError ...)` pattern.
 const { LLRPClient, LLRPCore } = require('llrpjs');
+const { closeLlrpConnection } = require('../utils/readerShell');
+// The reader's admin login (same root account as its REST API), used only to
+// free it when another device holds its LLRP connection.
+const READER_ADMIN_USERNAME = process.env.IMPINJ_REST_USERNAME || 'root';
+const READER_ADMIN_PASSWORD = process.env.IMPINJ_REST_PASSWORD || 'impinj';
+const HELD_ELSEWHERE = 'READER_HELD_ELSEWHERE';
 
 // Two llrpjs bugs that a live, tag-streaming reader hits constantly (same
 // ones patched in app/src/native/impinjRfid.ts — ported here because the
@@ -314,8 +320,10 @@ function attachTagReportListener(reader: any) {
     reader.on('error', () => { connected = false; started = false; });
 }
 
-async function ensureConnected() {
-    if (connected && client?.socketWritable) return client;
+// `fresh`: drop this server's own connection and make a new one (what
+// Connect does) instead of reusing it.
+async function ensureConnected(fresh = false) {
+    if (!fresh && connected && client?.socketWritable) return client;
     if (!READER_HOST) throw new Error('IMPINJ_LLRP_HOST is not configured on this server');
 
     client = new LLRPClient({ host: READER_HOST, port: READER_PORT });
@@ -332,6 +340,11 @@ async function ensureConnected() {
         throw new Error(`Unexpected message while confirming connection: ${notif?.getName?.() ?? notif}`);
     }
     const status = notif.getReaderEventNotificationData().getConnectionAttemptEvent()?.getStatus();
+    if (status === 'Failed_A_Client_Initiated_Connection_Already_Exists') {
+        const held: any = new Error('The reader is connected to another device.');
+        held.code = HELD_ELSEWHERE;
+        throw held;
+    }
     if (status !== 'Success') {
         throw new Error(`Reader rejected the LLRP connection: ${status}`);
     }
@@ -346,11 +359,39 @@ async function ensureConnected() {
 // just reflects in-memory state.
 exports.status = (req: any, res: any) => res.status(200).json(buildStatus());
 
+// Connect always wins: this server's old connection is replaced, and when
+// another device or app holds the reader, the reader is told (through its
+// admin shell) to drop that one, then the connection is tried again. The
+// page never sees an "already connected" error: only a plain failure if the
+// reader still can't be reached.
 exports.connect = async (req: any, res: any) => {
     try {
-        await ensureConnected();
+        if (client?.socketWritable) {
+            await transact(client, new LLRPCore.CLOSE_CONNECTION(), TRANSACT_TIMEOUT_MS).catch(() => null);
+        }
+        await closeClient();
+        connected = false;
+        started = false;
+        for (let attempt = 0; ; attempt++) {
+            try {
+                await ensureConnected(true);
+                break;
+            } catch (error: any) {
+                await closeClient();
+                connected = false;
+                if (error?.code !== HELD_ELSEWHERE || attempt >= 2) throw error;
+                await closeLlrpConnection({ host: READER_HOST, username: READER_ADMIN_USERNAME, password: READER_ADMIN_PASSWORD })
+                    .catch((shellError: any) => console.warn('Impinj: could not free the reader:', shellError?.message || shellError));
+                // Let the reader finish dropping the old connection.
+                await new Promise((resolve) => setTimeout(resolve, 1500 * (attempt + 1)));
+            }
+        }
+        lastError = null;
+        lastErrorAtUtc = null;
     } catch (error: any) {
-        recordError(error?.message || 'Could not connect to the Impinj R700 reader over LLRP');
+        recordError(error?.code === HELD_ELSEWHERE
+            ? 'Could not connect to the reader. Please try again in a moment.'
+            : error?.message || 'Could not connect to the Impinj R700 reader over LLRP');
     }
     return res.status(200).json(buildStatus());
 };
