@@ -29,14 +29,14 @@ mongoose.connect(process.env.DATABASE,
     });
 mongoose.connection.on('connected', () => {
     console.log('Connected to MongoDB');
-    // Companies registered before company types existed: Retail & Supermarkets.
+    // Companies registered before company types existed get the default type.
     // Only touches companies without a type, so it is safe on every start.
     const Company = require('./models/companyModel');
     const { DEFAULT_COMPANY_TYPE } = require('./utils/companyTypes');
     Company.updateMany({ companyType: { $exists: false } }, { $set: { companyType: DEFAULT_COMPANY_TYPE } })
         .then((r: any) => {
             const n = r?.modifiedCount ?? r?.nModified ?? 0;
-            if (n) console.log(`Set company type Retail & Supermarkets on ${n} older companies`);
+            if (n) console.log(`Set the default company type on ${n} older companies`);
         })
         .catch((err: any) => console.error('Company type backfill failed:', err));
 });

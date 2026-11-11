@@ -22,8 +22,8 @@ const COMPANY_TYPES: { key: string; label: string }[] = [
     { key: 'recyclingWasteManagement', label: 'Recycling & Waste Management' }
 ];
 
-// Companies registered before types existed are Retail & Supermarkets.
-const DEFAULT_COMPANY_TYPE = 'retailSupermarkets';
+// Companies registered before types existed are Bookstore RFID.
+const DEFAULT_COMPANY_TYPE = 'bookstoreRfid';
 const COMPANY_TYPE_KEYS = COMPANY_TYPES.map((t) => t.key);
 
 module.exports = { COMPANY_TYPES, COMPANY_TYPE_KEYS, DEFAULT_COMPANY_TYPE };

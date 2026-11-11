@@ -29,7 +29,7 @@ const companySchema = new mongoose.Schema({
     // employee route (/employee-auth). Lowercased, no leading "@". Empty
     // means this company has no employee-route access configured yet.
     // Kind of business (utils/companyTypes.ts), chosen when the company is
-    // registered. Older companies are Retail & Supermarkets (set once at
+    // registered. Older companies are Bookstore RFID (set once at
     // server start, see server.ts).
     companyType: {
         type: String,
