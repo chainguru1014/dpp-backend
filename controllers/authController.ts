@@ -236,6 +236,15 @@ const findActiveEmployeeByEmail = async (email: string, select = '') => {
     return null;
 };
 
+// Fills in an Employee's company (name, type) for the sign-in response.
+// Mongoose 5 only runs a document's populate() with execPopulate(); without
+// it the company stayed a bare id, so the app got no companyName/companyType.
+const populateCompany = async (employee: any) => {
+    const pending = employee.populate({ path: 'company_id', select: 'name companyType' });
+    if (pending && typeof pending.execPopulate === 'function') await pending.execPopulate();
+    else await pending;
+};
+
 // Registering as a professional (staff) user with an email no company has
 // put on its staff list (Staff Management on the admin site).
 const notEmployee = (res: any) => res.status(403).json({
@@ -252,7 +261,7 @@ const sendEmployeeAuthResponse = async (employee: any, req: any, res: any) => {
     await employee.save();
     await appendAuditLog(employee._id, 'login', { emailDomain: employee.emailDomain }, req.ip);
     const token = signJwt({ id: employee._id, actorKind: 'Employee', role: employee.role });
-    await employee.populate({ path: 'company_id', select: 'name companyType' });
+    await populateCompany(employee);
     return res.status(200).json({
         status: 'success',
         token,
@@ -699,7 +708,7 @@ exports.faceEnroll = async (req: any, res: any, next: any) => {
         await actor.save();
 
         if (actorKind === 'Employee') {
-            await actor.populate({ path: 'company_id', select: 'name companyType' });
+            await populateCompany(actor);
             return res.status(200).json({ status: 'success', actorKind, user: buildEmployeeResponse(actor), avatar: actor.avatar, faceEnrolled: true });
         }
         return res.status(200).json({ status: 'success', actorKind, user: buildUserResponse(actor), avatar: actor.avatar, faceEnrolled: true });
