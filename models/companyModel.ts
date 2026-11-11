@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { COMPANY_TYPE_KEYS, DEFAULT_COMPANY_TYPE } = require('../utils/companyTypes');
 
 const companySchema = new mongoose.Schema({
     name: {
@@ -27,6 +28,14 @@ const companySchema = new mongoose.Schema({
     // Corporate email domains (e.g. "hm.com") whose staff may sign in via the
     // employee route (/employee-auth). Lowercased, no leading "@". Empty
     // means this company has no employee-route access configured yet.
+    // Kind of business (utils/companyTypes.ts), chosen when the company is
+    // registered. Older companies are Retail & Supermarkets (set once at
+    // server start, see server.ts).
+    companyType: {
+        type: String,
+        enum: COMPANY_TYPE_KEYS,
+        default: DEFAULT_COMPANY_TYPE
+    },
     allowedEmailDomains: {
         type: [String],
         default: []

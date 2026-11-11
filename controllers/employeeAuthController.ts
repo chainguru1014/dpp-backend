@@ -14,6 +14,7 @@ const buildEmployeeResponse = (employee: any) => ({
     emailDomain: employee.emailDomain,
     company_id: employee.company_id?._id || employee.company_id,
     companyName: employee.company_id?.name,
+    companyType: employee.company_id?.companyType || null,
     employeeCode: employee.employeeCode,
     name: employee.name || null,
     role: employee.role,
@@ -41,7 +42,7 @@ exports.buildEmployeeResponse = buildEmployeeResponse;
 // keep serving the employee data it cached at that moment indefinitely.
 exports.me = async (req: any, res: any, next: any) => {
     try {
-        const employee = await Employee.findById(req.user.id).populate({ path: 'company_id', select: 'name' });
+        const employee = await Employee.findById(req.user.id).populate({ path: 'company_id', select: 'name companyType' });
         if (!employee) {
             return res.status(404).json({ status: 'fail', message: 'Employee not found' });
         }
@@ -61,7 +62,7 @@ exports.me = async (req: any, res: any, next: any) => {
 // (POST /auth/face/enroll). Saving marks the profile as done.
 exports.updateMe = async (req: any, res: any, next: any) => {
     try {
-        const employee = await Employee.findById(req.user.id).populate({ path: 'company_id', select: 'name' });
+        const employee = await Employee.findById(req.user.id).populate({ path: 'company_id', select: 'name companyType' });
         if (!employee) {
             return res.status(404).json({ status: 'fail', message: 'Employee not found' });
         }
@@ -155,7 +156,7 @@ exports.otpVerify = async (req: any, res: any, next: any) => {
         const emailHash = hashEmail(email);
         const employee = await Employee.findOne({ emailHash })
             .select('+otpCode +otpExpiresAt +otpAttempts +otpResendAt')
-            .populate({ path: 'company_id', select: 'name' });
+            .populate({ path: 'company_id', select: 'name companyType' });
 
         if (!employee || !employee.otpCode || !employee.otpExpiresAt) {
             return res.status(400).json({ status: 'fail', message: 'No pending code for this email. Request a new one.' });

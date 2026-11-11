@@ -252,7 +252,7 @@ const sendEmployeeAuthResponse = async (employee: any, req: any, res: any) => {
     await employee.save();
     await appendAuditLog(employee._id, 'login', { emailDomain: employee.emailDomain }, req.ip);
     const token = signJwt({ id: employee._id, actorKind: 'Employee', role: employee.role });
-    await employee.populate({ path: 'company_id', select: 'name' });
+    await employee.populate({ path: 'company_id', select: 'name companyType' });
     return res.status(200).json({
         status: 'success',
         token,
@@ -699,7 +699,7 @@ exports.faceEnroll = async (req: any, res: any, next: any) => {
         await actor.save();
 
         if (actorKind === 'Employee') {
-            await actor.populate({ path: 'company_id', select: 'name' });
+            await actor.populate({ path: 'company_id', select: 'name companyType' });
             return res.status(200).json({ status: 'success', actorKind, user: buildEmployeeResponse(actor), avatar: actor.avatar, faceEnrolled: true });
         }
         return res.status(200).json({ status: 'success', actorKind, user: buildUserResponse(actor), avatar: actor.avatar, faceEnrolled: true });
