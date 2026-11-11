@@ -25,7 +25,10 @@ const buildEmployeeResponse = (employee: any) => ({
         impinj: employee.rfidReaderIds?.impinj || '',
         zebra: employee.rfidReaderIds?.zebra || ''
     },
-    lastLoginAt: employee.lastLoginAt
+    lastLoginAt: employee.lastLoginAt,
+    avatar: employee.avatar || null,
+    faceEnrolled: !!employee.faceEnrolledAt,
+    profileCompletedAt: employee.profileCompletedAt || null
 });
 // Exported so authController's unified /auth/otp/* endpoints can build the
 // same response shape for an Employee owner — see findOtpOwner there.
@@ -42,6 +45,33 @@ exports.me = async (req: any, res: any, next: any) => {
         if (!employee) {
             return res.status(404).json({ status: 'fail', message: 'Employee not found' });
         }
+        return res.status(200).json({
+            status: 'success',
+            employee: buildEmployeeResponse(employee),
+            actorKind: 'Employee'
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+// PATCH /employee-auth/me { name } — the app's staff profile page (shown
+// right after registering, and later from Settings). Only the display name
+// is the employee's own to change; the photo is set by face registration
+// (POST /auth/face/enroll). Saving marks the profile as done.
+exports.updateMe = async (req: any, res: any, next: any) => {
+    try {
+        const employee = await Employee.findById(req.user.id).populate({ path: 'company_id', select: 'name' });
+        if (!employee) {
+            return res.status(404).json({ status: 'fail', message: 'Employee not found' });
+        }
+        const name = typeof req.body?.name === 'string' ? req.body.name.trim().slice(0, 100) : '';
+        if (!name) {
+            return res.status(400).json({ status: 'fail', message: 'Name is required' });
+        }
+        employee.name = name;
+        employee.profileCompletedAt = employee.profileCompletedAt || new Date();
+        await employee.save();
         return res.status(200).json({
             status: 'success',
             employee: buildEmployeeResponse(employee),

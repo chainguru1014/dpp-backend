@@ -96,6 +96,20 @@ const employeeSchema = new mongoose.Schema({
     },
     lastLoginAt: {
         type: Date
+    },
+    // Profile picture: the photo taken when the employee registers their
+    // face in the app (bare filename in uploads/, like User.avatar).
+    avatar: {
+        type: String
+    },
+    // Set once their face is stored in CompreFace (subject "employee-<id>"),
+    // which lets them sign in with Face login.
+    faceEnrolledAt: {
+        type: Date
+    },
+    // Set when the employee saves the app's profile page after registering.
+    profileCompletedAt: {
+        type: Date
     }
 }, {
     timestamps: true

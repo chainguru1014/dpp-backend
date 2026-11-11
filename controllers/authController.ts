@@ -108,6 +108,11 @@ exports.google = async (req: any, res: any, next: any) => {
         if (employee) {
             return await sendEmployeeAuthResponse(employee, req, res);
         }
+        // Registering as a professional (staff) user: only emails a company
+        // has put on its staff list may continue; never create a User here.
+        if (req.body?.accountType === 'professional') {
+            return notEmployee(res);
+        }
 
         const result = await findOrLinkOrCreateByEmail({
             email: payload.email,
@@ -164,6 +169,9 @@ exports.apple = async (req: any, res: any, next: any) => {
         const employee = await findActiveEmployeeByEmail(applePayload.email);
         if (employee) {
             return await sendEmployeeAuthResponse(employee, req, res);
+        }
+        if (req.body?.accountType === 'professional') {
+            return notEmployee(res);
         }
 
         const firstName = user?.firstName;
@@ -227,6 +235,14 @@ const findActiveEmployeeByEmail = async (email: string, select = '') => {
     }
     return null;
 };
+
+// Registering as a professional (staff) user with an email no company has
+// put on its staff list (Staff Management on the admin site).
+const notEmployee = (res: any) => res.status(403).json({
+    status: 'fail',
+    code: 'notEmployee',
+    message: 'This email is not registered by a corporation. Please ask your corporation supervisor to register your email address on our admin portal first.'
+});
 
 // Signs an Employee in and sends the same envelope sendAuthResponse uses
 // (plus actorKind: 'Employee'), so every sign-in method (OTP, Google, Apple)
@@ -314,6 +330,14 @@ exports.signupOtpRequest = async (req: any, res: any, next: any) => {
         const email = normalizeEmail(req.body?.email);
         if (!email) {
             return res.status(400).json({ status: 'fail', message: 'email is required' });
+        }
+
+        // Professional (staff) registration: the email must already be on a
+        // company's staff list; the code then signs that employee in.
+        if (req.body?.accountType === 'professional') {
+            const employee = await findActiveEmployeeByEmail(email, '+otpCode +otpExpiresAt +otpAttempts +otpResendAt');
+            if (!employee) return notEmployee(res);
+            return await issueOtp(employee, email, res);
         }
 
         const { owner: existingOwner } = await findOtpOwner(email);
@@ -602,6 +626,160 @@ const FACE_ERRORS: Record<string, { status: number; message: string }> = {
 };
 const faceFail = (res: any, key: string) => res.status(FACE_ERRORS[key].status).json({ status: 'fail', code: key, message: FACE_ERRORS[key].message });
 
+// CompreFace subject names: a User's _id as-is (as since face sign-in
+// began), an Employee's _id as "employee-<id>".
+const EMPLOYEE_SUBJECT_PREFIX = 'employee-';
+const faceSubjectFor = (actorKind: string, id: any) => (actorKind === 'Employee' ? `${EMPLOYEE_SUBJECT_PREFIX}${id}` : String(id));
+
+/** The account a CompreFace subject belongs to, if it still has a face registered. */
+const findFaceOwner = async (subject: string) => {
+    try {
+        if (subject.startsWith(EMPLOYEE_SUBJECT_PREFIX)) {
+            const doc = await Employee.findOne({ _id: subject.slice(EMPLOYEE_SUBJECT_PREFIX.length), faceEnrolledAt: { $exists: true }, isActive: true });
+            return doc ? { actorKind: 'Employee', doc } : null;
+        }
+        const doc = await User.findOne({ _id: subject, faceEnrolledAt: { $exists: true } });
+        return doc ? { actorKind: 'User', doc } : null;
+    } catch (err) {
+        // A subject that isn't a valid id (left over from tests) matches nobody.
+        return null;
+    }
+};
+
+/** Saves the face photo in uploads/ (bare filename, like /upload/single) for use as the profile picture. */
+const saveFacePhoto = (b64: string): string | null => {
+    try {
+        const filename = `${Date.now()}${uniqid()}.jpg`;
+        fs.writeFileSync(path.join(__dirname, '../uploads', filename), Buffer.from(b64, 'base64'));
+        return filename;
+    } catch (err) {
+        console.error('Saving face photo failed:', err);
+        return null;
+    }
+};
+
+// POST /auth/face/enroll { image } — signed in (User or Employee): register
+// this person's face so they can use Face login, or replace it ("reset my
+// face" from the profile page). The photo becomes their profile picture.
+// Refused when the face already belongs to a different account.
+exports.faceEnroll = async (req: any, res: any, next: any) => {
+    try {
+        const actorKind = req.user?.actorKind;
+        if (actorKind !== 'User' && actorKind !== 'Employee') {
+            return res.status(403).json({ status: 'fail', message: 'Only app accounts can register a face' });
+        }
+        if (!CompreFace.isConfigured()) return faceFail(res, 'notConfigured');
+        const b64 = CompreFace.toBase64Image(req.body?.image);
+        if (!b64) return faceFail(res, 'badImage');
+
+        const Model = actorKind === 'Employee' ? Employee : User;
+        const actor = await Model.findById(req.user.id);
+        if (!actor) {
+            return res.status(404).json({ status: 'fail', message: 'Account not found' });
+        }
+        const subject = faceSubjectFor(actorKind, actor._id);
+
+        const match = await CompreFace.recognize(b64);
+        if (match.error) return faceFail(res, match.error);
+        if (match.faces > 1) return faceFail(res, 'manyFaces');
+        if (match.subject && match.subject !== subject && match.similarity >= CompreFace.similarityThreshold()) {
+            if (await findFaceOwner(match.subject)) {
+                return res.status(409).json({ status: 'fail', code: 'duplicate', message: 'This face is already registered to another account.' });
+            }
+        }
+
+        // Re-registering replaces the old face rather than adding to it.
+        if (actor.faceEnrolledAt) await CompreFace.deleteSubject(subject);
+        const added = await CompreFace.addFace(subject, b64);
+        if (added.error) return faceFail(res, added.error);
+
+        actor.faceEnrolledAt = new Date();
+        const filename = saveFacePhoto(b64);
+        if (filename) actor.avatar = filename;
+        await actor.save();
+
+        if (actorKind === 'Employee') {
+            await actor.populate({ path: 'company_id', select: 'name' });
+            return res.status(200).json({ status: 'success', actorKind, user: buildEmployeeResponse(actor), avatar: actor.avatar, faceEnrolled: true });
+        }
+        return res.status(200).json({ status: 'success', actorKind, user: buildUserResponse(actor), avatar: actor.avatar, faceEnrolled: true });
+    } catch (error) {
+        next(error);
+    }
+};
+
+// ---------------------------------------------------------------------------
+// This device (see models/appDeviceModel.ts).
+// ---------------------------------------------------------------------------
+const AppDevice = require('../models/appDeviceModel');
+
+const cleanDeviceId = (v: any) => {
+    const id = typeof v === 'string' ? v.trim() : '';
+    return /^[A-Za-z0-9_-]{16,80}$/.test(id) ? id : '';
+};
+const clip = (v: any, max: number) => (v == null ? undefined : String(v).slice(0, max));
+
+// GET /auth/device/:deviceId — has an account finished registering or
+// signing in on this device, and does one of them have a face registered?
+exports.deviceStatus = async (req: any, res: any, next: any) => {
+    try {
+        const deviceId = cleanDeviceId(req.params.deviceId);
+        if (!deviceId) return res.status(400).json({ status: 'fail', message: 'Invalid device id' });
+        const device = await AppDevice.findOne({ deviceId }).lean();
+        if (!device) return res.status(200).json({ status: 'success', registered: false, faceEnrolled: false });
+
+        const ids = (kind: string) => (device.accounts || []).filter((a: any) => a.actorKind === kind).map((a: any) => a.actorId);
+        const [userFace, employeeFace] = await Promise.all([
+            User.exists({ _id: { $in: ids('User') }, faceEnrolledAt: { $exists: true } }),
+            Employee.exists({ _id: { $in: ids('Employee') }, faceEnrolledAt: { $exists: true }, isActive: true })
+        ]);
+        await AppDevice.updateOne({ _id: device._id }, { $set: { lastSeenAt: new Date() } });
+        return res.status(200).json({ status: 'success', registered: true, faceEnrolled: !!(userFace || employeeFace) });
+    } catch (error) {
+        next(error);
+    }
+};
+
+// POST /auth/device { deviceId, platform, model, osVersion, appVersion } —
+// signed in: remember that this account registered / signed in on this device.
+exports.registerDevice = async (req: any, res: any, next: any) => {
+    try {
+        const actorKind = req.user?.actorKind;
+        if (actorKind !== 'User' && actorKind !== 'Employee') {
+            return res.status(403).json({ status: 'fail', message: 'Only app accounts can register a device' });
+        }
+        const deviceId = cleanDeviceId(req.body?.deviceId);
+        if (!deviceId) return res.status(400).json({ status: 'fail', message: 'Invalid device id' });
+
+        const now = new Date();
+        const info = {
+            platform: clip(req.body?.platform, 20),
+            model: clip(req.body?.model, 100),
+            osVersion: clip(req.body?.osVersion, 50),
+            appVersion: clip(req.body?.appVersion, 30),
+            userAgent: clip(req.headers['user-agent'], 300),
+            lastActorKind: actorKind,
+            lastActorId: req.user.id,
+            lastSeenAt: now
+        };
+        // Known account on this device: refresh it; otherwise add it.
+        const updated = await AppDevice.updateOne(
+            { deviceId, accounts: { $elemMatch: { actorKind, actorId: req.user.id } } },
+            { $set: { ...info, 'accounts.$.lastAt': now } }
+        );
+        if (!updated.matchedCount) {
+            await AppDevice.updateOne(
+                { deviceId },
+                { $set: info, $push: { accounts: { actorKind, actorId: req.user.id, firstAt: now, lastAt: now } } },
+                { upsert: true }
+            );
+        }
+        return res.status(200).json({ status: 'success', registered: true });
+    } catch (error) {
+        next(error);
+    }
+};
+
 // POST /auth/face/signup { image } — create the account, enroll its face in
 // CompreFace (subject = the new User id), then start the session.
 // profileCompleted stays false, so the app shows the profile page next
@@ -664,9 +842,13 @@ exports.faceLogin = async (req: any, res: any, next: any) => {
         if (match.error) return faceFail(res, match.error);
         if (match.faces > 1) return faceFail(res, 'manyFaces');
 
-        const user = match.subject && match.similarity >= CompreFace.similarityThreshold()
-            ? await User.findOne({ _id: match.subject, faceEnrolledAt: { $exists: true } })
+        const owner = match.subject && match.similarity >= CompreFace.similarityThreshold()
+            ? await findFaceOwner(match.subject)
             : null;
+        if (owner && owner.actorKind === 'Employee') {
+            return await sendEmployeeAuthResponse(owner.doc, req, res);
+        }
+        const user = owner ? owner.doc : null;
         if (!user) {
             return res.status(404).json({ status: 'fail', code: 'unrecognized', message: 'Face not recognised. Try again or sign up first.' });
         }

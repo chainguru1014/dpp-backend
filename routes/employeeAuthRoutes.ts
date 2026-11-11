@@ -26,6 +26,7 @@ router.post('/otp/verify', otpVerifyLimiter, EmployeeAuthController.otpVerify);
 // admin-changed fields (e.g. rfidReaderIds) on reload/focus without
 // requiring a full logout/login cycle.
 router.get('/me', protect, restrictTo('Employee'), EmployeeAuthController.me);
+router.patch('/me', protect, restrictTo('Employee'), EmployeeAuthController.updateMe);
 router.get('/audit-log', protect, restrictToEmployeeRoleOrCompany('manager', 'admin'), EmployeeAuditLogController.list);
 
 // Roster management — Company (brand admin) accounts, or an Employee acting

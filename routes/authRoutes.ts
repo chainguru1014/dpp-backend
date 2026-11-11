@@ -31,6 +31,11 @@ router.post('/otp/verify', otpVerifyLimiter, AuthController.otpVerify);
 // shares the OTP request limiter's tight budget.
 router.post('/face/signup', otpRequestLimiter, AuthController.faceSignup);
 router.post('/face/login', otpVerifyLimiter, AuthController.faceLogin);
+// Signed in: register (or replace) your face for Face login.
+router.post('/face/enroll', protect, AuthController.faceEnroll);
+// This device: known? (Start shows Login if so, else the register flow.)
+router.get('/device/:deviceId', AuthController.deviceStatus);
+router.post('/device', protect, AuthController.registerDevice);
 router.post('/profile/complete', protect, AuthController.completeProfile);
 router.post('/device-token', protect, AuthController.registerDeviceToken);
 router.post('/ai-concierge-consent', protect, AuthController.aiConciergeConsent);
