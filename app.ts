@@ -44,6 +44,12 @@ if (!process.env.JWT_SECRET) {
 
 const app = express();
 
+// The API runs behind one nginx proxy (api.innosynch.com), which passes the
+// visitor's address in X-Forwarded-For. Without this, req.ip is nginx's
+// 127.0.0.1 for everyone, so the per-IP sign-in limits (5 code requests per
+// 15 minutes) were shared by all users at once.
+app.set('trust proxy', 1);
+
 // CORS configuration - must be before other middleware
 app.use(cors({
     origin: '*', // Allow all origins for development/production
