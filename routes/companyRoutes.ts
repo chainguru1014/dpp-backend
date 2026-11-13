@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const CompanyController = require('../controllers/companyController');
 const { protect, restrictTo } = require('../middleware/authMiddleware');
+const { requireSuperAdmin, requireSuperOrSelf } = require('../middleware/superAdmin');
 
 // Protect all routes after this middleware
 // router.use(authController.protect);
@@ -20,9 +21,11 @@ router.get('/dpp-theme', protect, restrictTo('Company', 'Employee'), CompanyCont
 router.put('/dpp-theme', protect, restrictTo('Company', 'Employee'), CompanyController.updateDppTheme);
 router.get('/:id/dpp-theme', CompanyController.getPublicDppTheme);
 router.get('/:id', CompanyController.getCompany);
-router.post('/', CompanyController.addCompany);
-router.put('/:id', CompanyController.updateCompany);
-router.delete('/:id', CompanyController.deleteCompany);
+// Adding or removing a brand company: the Yometel admin only (a brand it
+// adds is accepted at once). Changing one: the admin, or the company itself.
+router.post('/', protect, requireSuperAdmin, CompanyController.addCompany);
+router.put('/:id', protect, requireSuperOrSelf, CompanyController.updateCompany);
+router.delete('/:id', protect, requireSuperAdmin, CompanyController.deleteCompany);
 router.get('/verify/:id', CompanyController.verify);
 
 
