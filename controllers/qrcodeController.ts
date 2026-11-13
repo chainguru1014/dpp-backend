@@ -3,6 +3,7 @@ const SecurityQRCode = require('../models/securityQRCodeModel');
 const Serials = require('../models/serialModal')
 const Product = require('../models/productModel');
 const Company = require('../models/companyModel');
+const Brand = require('../models/brandModel');
 const ScanRecord = require('../models/scanRecordModel');
 const User = require('../models/userModel');
 const ProductReaction = require('../models/productReactionModel');
@@ -86,6 +87,25 @@ const getPublicProductPayload = async (productId: any, qrcodeId: any) => {
 
     const serials = await Serials.find({ product_id: productId, qrcode_id: numericQrId });
     const normalizedProduct = normalizeProductMedia(product?._doc || {});
+
+    // The brand's tagline lives on its Brand row (not copied onto products):
+    // matched by the product's brand name within its company, falling back
+    // to the company's own short tagline.
+    if (normalizedProduct.brandInfo) {
+        let tagline = '';
+        const brandKey = String(normalizedProduct.brandInfo.name || '').trim().toLowerCase();
+        const brandCompanyId = product.company_id || rawCompanyId;
+        if (brandKey && brandCompanyId) {
+            try {
+                const brandDoc = await Brand.findOne({ company_id: brandCompanyId, nameKey: brandKey }).select('tagline').lean();
+                tagline = String(brandDoc?.tagline || '').trim();
+            } catch (error) {
+                console.error('Brand tagline lookup failed:', error);
+            }
+        }
+        if (!tagline) tagline = String(companyDoc?.title || '').trim();
+        normalizedProduct.brandInfo = { ...(normalizedProduct.brandInfo?.toObject?.() || normalizedProduct.brandInfo), tagline };
+    }
     const scannedQRCode = buildPublicProductUrl(productId, numericQrId);
     const qrcodeImage = await qrcode.toDataURL(scannedQRCode);
 

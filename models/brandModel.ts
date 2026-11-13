@@ -14,6 +14,9 @@ const brandSchema = new mongoose.Schema({
     // Lowercased name: one brand per name within a company, whatever the capitals.
     nameKey: { type: String, required: true },
     detail: { type: String, default: '' },
+    // A short line under the name (e.g. "Maison Européenne"), shown on the
+    // staff capture page's brand card.
+    tagline: { type: String, default: '' },
     websiteUrl: { type: String, default: '' },
     logoUrl: { type: String, default: '' },
     coverUrl: { type: String, default: '' },

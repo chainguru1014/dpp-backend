@@ -10,7 +10,7 @@ const { normalizeDppTheme } = require('../utils/dppTheme');
 // brand it sells under. The Brand page lists them, edits one at a time, and
 // the shopper's product page asks for the design of a product's brand.
 
-const DETAIL_FIELDS = ['detail', 'websiteUrl', 'logoUrl', 'coverUrl'];
+const DETAIL_FIELDS = ['detail', 'tagline', 'websiteUrl', 'logoUrl', 'coverUrl'];
 const text = (value: any, max = 500) => String(value ?? '').trim().slice(0, max);
 const keyOf = (name: any) => text(name, 120).toLowerCase();
 
@@ -20,6 +20,7 @@ const toResponse = (brand: any, companyName = '') => ({
     companyName,
     name: brand.name,
     detail: brand.detail || '',
+    tagline: brand.tagline || '',
     websiteUrl: brand.websiteUrl || '',
     logoUrl: brand.logoUrl || '',
     coverUrl: brand.coverUrl || '',
