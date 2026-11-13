@@ -77,6 +77,18 @@ const syncCompanyProducts = async (brand: any) => {
  * run on every start.
  */
 const consolidateBrands = async () => {
+    // First run only: keep a copy of every product's brand details, so the
+    // move to one brand per company can be undone (productbrandarchives).
+    const migrations = mongoose.connection.collection('migrations');
+    if (!(await migrations.findOne({ key: 'oneBrandPerCompany' }))) {
+        const all = await Product.find({}).select('company_id brandInfo').lean();
+        if (all.length) {
+            await mongoose.connection.collection('productbrandarchives').insertMany(
+                all.map((p: any) => ({ productId: p._id, company_id: p.company_id, brandInfo: p.brandInfo || null, archivedAt: new Date() }))
+            );
+        }
+        await migrations.insertOne({ key: 'oneBrandPerCompany', at: new Date(), products: all.length });
+    }
     const companies = await Company.find({}).select('name role').lean();
     let merged = 0;
     let synced = 0;
