@@ -81,19 +81,21 @@ const productSchema = new mongoose.Schema({
             required: true,
             trim: true
         },
+        // Filled from the company's brand profile (utils/brandProfile), which
+        // may still be unfinished: only the name is required.
         detail: {
             type: String,
-            required: true,
+            default: '',
             trim: true
         },
         websiteUrl: {
             type: String,
-            required: true,
+            default: '',
             trim: true
         },
         logoUrl: {
             type: String,
-            required: true,
+            default: '',
             trim: true
         },
         // Optional wide banner shown on the Brand Detail page (app).

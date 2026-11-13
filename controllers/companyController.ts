@@ -1,6 +1,7 @@
 const Company = require('../models/companyModel');
 const Product = require('../models/productModel')
 const Employee = require('../models/employeeModel');
+const Brand = require('../models/brandModel');
 const base = require('./baseController');
 const APIFeatures = require('../utils/apiFeatures');
 const AppError = require('../utils/appError');
@@ -136,6 +137,24 @@ exports.addCompany = async(req: any, res: any, next: any) => {
             processSteps: [{ entity: String(req.body?.name || '').trim(), type: 'general' }]
         });
 
+        // The company is a brand: its brand profile starts with the name,
+        // tagline and logo given here (Brands page, Add brand).
+        try {
+            const nameKey = String(doc.name || '').trim().toLowerCase();
+            if (nameKey) {
+                await Brand.create({
+                    company_id: doc._id,
+                    name: String(doc.name).trim(),
+                    nameKey,
+                    tagline: String(req.body?.title || req.body?.tagline || '').trim().slice(0, 500),
+                    logoUrl: String(req.body?.logo || req.body?.logoUrl || '').trim().slice(0, 500),
+                    detail: String(req.body?.detail || '').trim().slice(0, 1000),
+                });
+            }
+        } catch (brandErr) {
+            console.error('Brand profile creation failed:', brandErr);
+        }
+
         // Best-effort: provision a default Supervisor employee from the
         // company's own contact email, so a freshly-registered company has
         // someone who can sign in to the dashboard immediately rather than
@@ -169,6 +188,13 @@ exports.addCompany = async(req: any, res: any, next: any) => {
 const resolveProcessStepsActor = async (req: any) => {
     if (req.user.actorKind === 'Company') {
         const company = await Company.findById(req.user.id);
+        // The super admin sets the workflows of any brand company
+        // (?companyId= on the request, or companyId in the body).
+        const target = String(req.query?.companyId || req.body?.companyId || '');
+        if (company?.role === 'super' && target && require('mongoose').Types.ObjectId.isValid(target)) {
+            const other = await Company.findById(target);
+            return { company: other, canWrite: !!other };
+        }
         // A platform super-admin (role: 'super') still owns its own company
         // doc/products (see employeeController's cross-company visibility for
         // the *elevated* side of 'super' — this is the other direction: it

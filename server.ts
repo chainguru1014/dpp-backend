@@ -39,6 +39,10 @@ mongoose.connection.on('connected', () => {
             if (n) console.log(`Set the default company type on ${n} older companies`);
         })
         .catch((err: any) => console.error('Company type backfill failed:', err));
+    // One brand per company: merge extra brands and bring products in line.
+    require('./utils/brandProfile').consolidateBrands()
+        .then((r: any) => console.log(`Brand profiles: ${r.merged} extra brands archived, ${r.synced} products updated`))
+        .catch((err: any) => console.error('Brand consolidation failed:', err));
 });
 mongoose.connection.on('error', (error: any) => {
     console.log(error);

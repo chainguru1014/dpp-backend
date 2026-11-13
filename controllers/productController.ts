@@ -10,6 +10,7 @@ const APIFeatures = require('../utils/apiFeatures');
 const { buildPublicProductUrl } = require('../utils/publicUrl');
 const { resolvePmc } = require('../services/pmcService');
 const ScanRecord = require('../models/scanRecordModel');
+const { applyCompanyBrand } = require('../utils/brandProfile');
 const ProductHolding = require('../models/productHoldingModel');
 const { createNotification } = require('./notificationController');
 const { resolveCompanyScope } = require('../utils/companyScope');
@@ -243,6 +244,10 @@ exports.updateProduct = async(req: any, res: any, next: any) => {
         if (gtinError) {
             return next(new AppError(400, 'fail', gtinError), req, res, next);
         }
+        // Brand details always come from the company's brand profile.
+        if (req.body && (req.body.brandInfo || req.body.company_id)) {
+            await applyCompanyBrand(req.body, req.body.company_id || product.company_id, product.brandInfo?.toObject?.() || product.brandInfo);
+        }
 
         const doc = await Product.findByIdAndUpdate(req.params.id, req.body, {
             new: true,
@@ -306,6 +311,8 @@ exports.addProduct = async(req: any, res: any, next: any) => {
 
         let product = req.body;
         product.total_minted_amount = 0;
+        // The product shows its company's brand (one brand per company).
+        await applyCompanyBrand(product, product.company_id);
         const categoryError = await applyItemCategory(product, { isCreate: true });
         if (categoryError) {
             return next(new AppError(400, 'fail', categoryError), req, res, next);
@@ -443,7 +450,8 @@ exports.bulkImport = async (req: any, res: any, next: any) => {
                     continue;
                 }
                 body.brandInfo = { ...defaultBrand, ...(body.brandInfo || {}) };
-                const missingBrand = ['name', 'detail', 'websiteUrl', 'logoUrl'].filter((key) => !String(body.brandInfo[key] || '').trim());
+                await applyCompanyBrand(body, companyId);
+                const missingBrand = ['name'].filter((key) => !String(body.brandInfo[key] || '').trim());
                 if (missingBrand.length) {
                     fail(`Brand details are missing (${missingBrand.join(', ')}). Fill the brand columns, or add one product by hand first so its brand can be reused.`);
                     continue;

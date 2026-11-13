@@ -5,6 +5,7 @@ const Product = require('../models/productModel');
 const AppError = require('../utils/appError');
 const { resolveCompanyScope } = require('../utils/companyScope');
 const { normalizeDppTheme } = require('../utils/dppTheme');
+const { syncCompanyProducts, isPlatformAccount } = require('../utils/brandProfile');
 
 // Brands: a company's brand details and product page design, one set per
 // brand it sells under. The Brand page lists them, edits one at a time, and
@@ -86,7 +87,10 @@ exports.list = async (req: any, res: any, next: any) => {
         }
         for (const id of companyIds) await ensureBrandsForCompany(id);
 
-        const brands = await Brand.find(scope.companyId ? { company_id: scope.companyId } : {}).sort({ name: 1 }).lean();
+        // The super admin may ask for one company's brand (?companyId=).
+        const only = !scope.companyId && mongoose.Types.ObjectId.isValid(String(req.query?.companyId || '')) ? String(req.query.companyId) : '';
+        const filter = scope.companyId ? { company_id: scope.companyId } : only ? { company_id: only } : {};
+        const brands = await Brand.find(filter).sort({ createdAt: 1, _id: 1 }).lean();
         const companies = await Company.find({ _id: { $in: brands.map((b: any) => b.company_id) } }).select('name').lean();
         const names = new Map<string, string>(companies.map((c: any) => [String(c._id), c.name || '']));
         res.status(200).json({
@@ -129,6 +133,12 @@ exports.create = async (req: any, res: any, next: any) => {
             return next(new AppError(400, 'fail', 'Please enter the brand name'), req, res, next);
         }
         await ensureBrandsForCompany(companyId);
+        // One brand per company: a company is its brand. Another brand is
+        // another company (Brands page, Add brand).
+        const owner = await Company.findById(companyId).select('name role').lean();
+        if (!isPlatformAccount(owner) && await Brand.exists({ company_id: companyId })) {
+            return next(new AppError(409, 'fail', 'Each company has one brand. To add another brand, add it as a new company on the Brands page.'), req, res, next);
+        }
         if (await Brand.exists({ company_id: companyId, nameKey: keyOf(name) })) {
             return next(new AppError(409, 'fail', `You already have a brand called "${name}"`), req, res, next);
         }
@@ -166,9 +176,11 @@ exports.update = async (req: any, res: any, next: any) => {
         const previousName = brand.name;
         const updated = await Brand.findByIdAndUpdate(brand._id, { $set: set }, { new: true });
 
-        // Products are matched to their brand by name, so a renamed brand
-        // takes its products with it.
-        if (set.name && set.name !== previousName) {
+        // A brand company: every product shows its brand, so the change
+        // reaches all of them (name, description, website, logo, cover).
+        const synced = await syncCompanyProducts(updated);
+        // The super admin's own brands: products follow a renamed brand.
+        if (!synced && set.name && set.name !== previousName) {
             await Product.updateMany(
                 { company_id: brand.company_id, 'brandInfo.name': previousName },
                 { $set: { 'brandInfo.name': set.name } }
@@ -186,7 +198,7 @@ exports.remove = async (req: any, res: any, next: any) => {
         const brand = await loadWritable(req, next);
         if (!brand) return;
         if (await Brand.countDocuments({ company_id: brand.company_id }) <= 1) {
-            return next(new AppError(400, 'fail', 'A company needs at least one brand. Rename this one instead.'), req, res, next);
+            return next(new AppError(400, 'fail', 'A company is its brand, so its brand can’t be removed. Rename it instead.'), req, res, next);
         }
         await Brand.deleteOne({ _id: brand._id });
         res.status(200).json({ status: 'success', data: null });
@@ -206,11 +218,12 @@ const themeForBrand = async (companyId: any, brandName: any) => {
     const nameKey = keyOf(brandName);
     const brand = nameKey ? await Brand.findOne({ company_id: id, nameKey }).select('dppTheme').lean() : null;
     if (brand) return normalizeDppTheme(brand.dppTheme);
-    // No brand of that name: a company with a single brand uses that one.
-    const only = await Brand.find({ company_id: id }).limit(2).select('dppTheme').lean();
-    if (only.length === 1) return normalizeDppTheme(only[0].dppTheme);
+    // No brand of that name: the company's own (first) brand.
+    const first = await Brand.findOne({ company_id: id }).sort({ createdAt: 1, _id: 1 }).select('dppTheme').lean();
+    if (first) return normalizeDppTheme(first.dppTheme);
     const company = await Company.findById(id).select('dppTheme').lean();
     return normalizeDppTheme(company?.dppTheme);
 };
 
 exports.themeForBrand = themeForBrand;
+exports.ensureBrandsForCompany = ensureBrandsForCompany;

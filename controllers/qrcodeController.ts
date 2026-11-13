@@ -97,7 +97,8 @@ const getPublicProductPayload = async (productId: any, qrcodeId: any) => {
         const brandCompanyId = product.company_id || rawCompanyId;
         if (brandKey && brandCompanyId) {
             try {
-                const brandDoc = await Brand.findOne({ company_id: brandCompanyId, nameKey: brandKey }).select('tagline').lean();
+                const brandDoc = (await Brand.findOne({ company_id: brandCompanyId, nameKey: brandKey }).select('tagline').lean())
+                    || (await Brand.findOne({ company_id: brandCompanyId }).sort({ createdAt: 1, _id: 1 }).select('tagline').lean());
                 tagline = String(brandDoc?.tagline || '').trim();
             } catch (error) {
                 console.error('Brand tagline lookup failed:', error);
