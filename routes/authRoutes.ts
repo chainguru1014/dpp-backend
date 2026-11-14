@@ -27,6 +27,11 @@ router.all('/apple/callback', (_req: Request, res: Response) => res.type('html')
 router.post('/otp/request', otpRequestLimiter, AuthController.otpRequest);
 router.post('/signup/otp/request', otpRequestLimiter, AuthController.signupOtpRequest);
 router.post('/otp/verify', otpVerifyLimiter, AuthController.otpVerify);
+// Staff: sign in with a password, register after an email code, and the
+// company list for that form.
+router.post('/staff/login', otpVerifyLimiter, AuthController.staffLogin);
+router.post('/staff/register', otpRequestLimiter, AuthController.staffRegister);
+router.get('/staff/companies', AuthController.staffCompanies);
 // Face sign-in (self-hosted CompreFace). Signup creates an account, so it
 // shares the OTP request limiter's tight budget.
 router.post('/face/signup', otpRequestLimiter, AuthController.faceSignup);

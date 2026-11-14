@@ -3,6 +3,7 @@ const { signJwt } = require('../utils/authShared');
 const { normalizeEmail, emailDomain, hashEmail } = require('../utils/pii');
 const { generateOtp, sendOtpEmail, OTP_EXPIRY_MINUTES } = require('../utils/otp');
 const { appendAuditLog } = require('../utils/employeeAuditLog');
+const { hashPassword, passwordProblem } = require('../utils/password');
 
 // See the matching constant/comment in authController.ts — same testing-only
 // master OTP code, opt-in via env, shared across both auth paths.
@@ -71,6 +72,20 @@ exports.updateMe = async (req: any, res: any, next: any) => {
             return res.status(400).json({ status: 'fail', message: 'Name is required' });
         }
         employee.name = name;
+        // Optional: employee ID (must be free) and a password for Staff Sign In.
+        if (typeof req.body?.employeeCode === 'string' && req.body.employeeCode.trim() && req.body.employeeCode.trim() !== employee.employeeCode) {
+            const code = req.body.employeeCode.trim().slice(0, 60);
+            const esc = code.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            if (await Employee.exists({ _id: { $ne: employee._id }, employeeCode: { $regex: `^${esc}$`, $options: 'i' } })) {
+                return res.status(409).json({ status: 'fail', field: 'employeeCode', message: 'This employee ID is already registered.' });
+            }
+            employee.employeeCode = code;
+        }
+        if (req.body?.password) {
+            const problem = passwordProblem(req.body.password);
+            if (problem) return res.status(400).json({ status: 'fail', field: 'password', message: problem });
+            employee.passwordHash = hashPassword(req.body.password);
+        }
         employee.profileCompletedAt = employee.profileCompletedAt || new Date();
         await employee.save();
         return res.status(200).json({

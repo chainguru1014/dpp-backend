@@ -229,6 +229,12 @@ exports.list = async (req: any, res: any, next: any) => {
 
         if (req.query?.date === 'today' || req.query?.date === undefined) {
             filter.dateKey = dateKeyFor(new Date(), req.query?.tzOffset);
+        } else if (req.query?.date === 'week' || req.query?.date === 'month') {
+            // From the start of this week (Monday) / month, in the phone's time zone.
+            const offsetMin = Number(req.query?.tzOffset) || 0;
+            const local = new Date(Date.now() - offsetMin * 60000);
+            const start = new Date(Date.UTC(local.getUTCFullYear(), local.getUTCMonth(), req.query.date === 'month' ? 1 : local.getUTCDate() - ((local.getUTCDay() + 6) % 7)));
+            filter.capturedAt = { $gte: new Date(start.getTime() + offsetMin * 60000) };
         } else if (req.query?.date && req.query.date !== 'all') {
             filter.dateKey = String(req.query.date);
         }

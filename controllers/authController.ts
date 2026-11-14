@@ -11,6 +11,10 @@ const { generateOtp, sendOtpEmail, OTP_EXPIRY_MINUTES } = require('../utils/otp'
 const { appendAuditLog } = require('../utils/employeeAuditLog');
 const { buildEmployeeResponse } = require('./employeeAuthController');
 const { createNotification } = require('./notificationController');
+const StaffSignup = require('../models/staffSignupModel');
+const jwt = require('jsonwebtoken');
+const mongoose = require('mongoose');
+const { hashPassword, verifyPassword, passwordProblem } = require('../utils/password');
 
 /**
  * Fire-and-forget "New sign-in" notification for a User actor. Best-effort —
@@ -213,6 +217,10 @@ const findOtpOwner = async (email: string) => {
     if (employee) {
         return { owner: employee, actorKind: 'Employee' };
     }
+    const signup = await StaffSignup.findOne({ email, otpExpiresAt: { $gt: new Date() } }).select(otpFields);
+    if (signup && signup.otpCode) {
+        return { owner: signup, actorKind: 'StaffSignup' };
+    }
     if (user) {
         return { owner: user, actorKind: 'User' };
     }
@@ -345,8 +353,12 @@ exports.signupOtpRequest = async (req: any, res: any, next: any) => {
         // company's staff list; the code then signs that employee in.
         if (req.body?.accountType === 'professional') {
             const employee = await findActiveEmployeeByEmail(email, '+otpCode +otpExpiresAt +otpAttempts +otpResendAt');
-            if (!employee) return notEmployee(res);
-            return await issueOtp(employee, email, res);
+            if (employee) return await issueOtp(employee, email, res);
+            // Not on any company's staff list yet: verify the email, then
+            // the app's Register Staff Profile page creates the employee.
+            let signup = await StaffSignup.findOne({ email }).select('+otpCode +otpExpiresAt +otpAttempts +otpResendAt');
+            if (!signup) signup = await StaffSignup.create({ email });
+            return await issueOtp(signup, email, res);
         }
 
         const { owner: existingOwner } = await findOtpOwner(email);
@@ -427,6 +439,14 @@ exports.otpVerify = async (req: any, res: any, next: any) => {
         // works unchanged for either actor kind.
         if (actorKind === 'Employee') {
             return await sendEmployeeAuthResponse(owner, req, res);
+        }
+
+        // A new staff member: the email is verified; the app now asks for
+        // the staff profile (POST /auth/staff/register with this token).
+        if (actorKind === 'StaffSignup') {
+            await owner.save();
+            const registrationToken = jwt.sign({ email, purpose: 'staffSignup' }, process.env.JWT_SECRET, { expiresIn: '30m' });
+            return res.status(200).json({ status: 'success', registration: true, registrationToken, email, actorKind: 'StaffSignup' });
         }
 
         await owner.save();
@@ -863,6 +883,110 @@ exports.faceLogin = async (req: any, res: any, next: any) => {
         }
         const token = signJwt({ id: user._id, name: user.name, actorKind: 'User' });
         return sendAuthResponse(res, { actorKind: 'User', actor: user, token }, req);
+    } catch (error) {
+        next(error);
+    }
+};
+
+
+// GET /auth/staff/companies — the brand companies a new staff member can
+// choose on Register Staff Profile (names only).
+exports.staffCompanies = async (req: any, res: any, next: any) => {
+    try {
+        const companies = await Company.find({ role: { $ne: 'super' }, name: { $ne: 'admin' } }).select('name').sort({ name: 1 }).lean();
+        const Brand = require('../models/brandModel');
+        const brands = await Brand.find({ company_id: { $in: companies.map((c: any) => c._id) } }).sort({ createdAt: 1 }).select('company_id name').lean();
+        const brandName = new Map<string, string>();
+        brands.forEach((b: any) => { if (!brandName.has(String(b.company_id))) brandName.set(String(b.company_id), b.name); });
+        res.status(200).json({ status: 'success', data: companies.map((c: any) => ({ _id: c._id, name: brandName.get(String(c._id)) || c.name })) });
+    } catch (error) {
+        next(error);
+    }
+};
+
+// POST /auth/staff/register { registrationToken, name, employeeCode,
+// company_id, employeeType: 'working_employee' | 'supervisor', password }
+// — a new staff member whose email was verified with a code. Creates the
+// Employee and signs them in. The employee ID must not be registered yet.
+// A Supervisor must use an email at the company's staff email domain when
+// the company has set one (so nobody can make themselves a brand's
+// Supervisor with any email).
+exports.staffRegister = async (req: any, res: any, next: any) => {
+    try {
+        let claims: any = null;
+        try {
+            claims = jwt.verify(String(req.body?.registrationToken || ''), process.env.JWT_SECRET);
+        } catch (e) {
+            claims = null;
+        }
+        if (!claims || claims.purpose !== 'staffSignup' || !claims.email) {
+            return res.status(401).json({ status: 'fail', message: 'Your email check has expired. Please register again.' });
+        }
+        const email = normalizeEmail(claims.email);
+        const name = String(req.body?.name || '').trim().slice(0, 100);
+        const employeeCode = String(req.body?.employeeCode || '').trim().slice(0, 60);
+        const companyId = String(req.body?.company_id || '');
+        const employeeType = req.body?.employeeType === 'supervisor' ? 'supervisor' : 'working_employee';
+        const password = String(req.body?.password || '');
+        if (!name) return res.status(400).json({ status: 'fail', field: 'name', message: 'Please enter your full name.' });
+        if (!employeeCode) return res.status(400).json({ status: 'fail', field: 'employeeCode', message: 'Please enter your employee ID.' });
+        const problem = passwordProblem(password);
+        if (problem) return res.status(400).json({ status: 'fail', field: 'password', message: problem });
+        if (!mongoose.Types.ObjectId.isValid(companyId)) return res.status(400).json({ status: 'fail', field: 'company', message: 'Please choose your company.' });
+        const company = await Company.findById(companyId).select('name role allowedEmailDomains');
+        if (!company || company.role === 'super') return res.status(400).json({ status: 'fail', field: 'company', message: 'Please choose your company.' });
+
+        if (await Employee.exists({ emailHash: hashEmail(email) })) {
+            return res.status(409).json({ status: 'fail', message: 'This email is already registered. Please sign in instead.' });
+        }
+        const codeKey = employeeCode.toLowerCase();
+        const taken = await Employee.findOne({ employeeCode: { $regex: `^${codeKey.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, $options: 'i' } }).select('_id').lean();
+        if (taken) {
+            return res.status(409).json({ status: 'fail', field: 'employeeCode', message: 'This employee ID is already registered. Check it, or ask your Supervisor.' });
+        }
+        const domains = (company.allowedEmailDomains || []).map((d: string) => String(d).toLowerCase());
+        if (employeeType === 'supervisor' && domains.length && !domains.includes(emailDomain(email))) {
+            return res.status(403).json({ status: 'fail', field: 'role', message: `To register as a Supervisor of ${company.name}, use your work email at ${domains.map((d: string) => '@' + d).join(' or ')}.` });
+        }
+
+        const employee = await Employee.create({
+            emailHash: hashEmail(email),
+            email,
+            emailDomain: emailDomain(email),
+            company_id: company._id,
+            employeeCode,
+            name,
+            role: 'staff',
+            employeeType,
+            isActive: true,
+            passwordHash: hashPassword(password),
+            profileCompletedAt: new Date()
+        });
+        await StaffSignup.deleteOne({ email });
+        await appendAuditLog(employee._id, 'self_register', { emailDomain: employee.emailDomain }, req.ip);
+        return await sendEmployeeAuthResponse(employee, req, res);
+    } catch (error) {
+        next(error);
+    }
+};
+
+// POST /auth/staff/login { email, password } — Staff Sign In.
+exports.staffLogin = async (req: any, res: any, next: any) => {
+    try {
+        const email = normalizeEmail(req.body?.email);
+        const password = String(req.body?.password || '');
+        if (!email || !password) return res.status(400).json({ status: 'fail', message: 'Please enter your work email and password.' });
+        const employee = await findActiveEmployeeByEmail(email, '+passwordHash');
+        if (!employee || !employee.passwordHash || !verifyPassword(password, employee.passwordHash)) {
+            return res.status(401).json({
+                status: 'fail',
+                code: employee && !employee.passwordHash ? 'noPassword' : 'badLogin',
+                message: employee && !employee.passwordHash
+                    ? 'This account has no password yet. Sign in with an email code, then set one in your profile.'
+                    : 'The email or password is not right.'
+            });
+        }
+        return await sendEmployeeAuthResponse(employee, req, res);
     } catch (error) {
         next(error);
     }

@@ -84,6 +84,12 @@ const employeeSchema = new mongoose.Schema({
         type: String,
         select: false
     },
+    // Staff sign-in with work email + password (utils/password, scrypt).
+    // Unset for staff who sign in with an email code only.
+    passwordHash: {
+        type: String,
+        select: false
+    },
     otpExpiresAt: {
         type: Date
     },
