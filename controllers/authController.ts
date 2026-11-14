@@ -926,7 +926,9 @@ exports.staffRegister = async (req: any, res: any, next: any) => {
         const name = String(req.body?.name || '').trim().slice(0, 100);
         const employeeCode = String(req.body?.employeeCode || '').trim().slice(0, 60);
         const companyId = String(req.body?.company_id || '');
-        const employeeType = req.body?.employeeType === 'supervisor' ? 'supervisor' : 'working_employee';
+        // Operator (working employee) only for now; Supervisors are added on
+        // the admin site.
+        const employeeType: string = 'working_employee';
         const password = String(req.body?.password || '');
         if (!name) return res.status(400).json({ status: 'fail', field: 'name', message: 'Please enter your full name.' });
         if (!employeeCode) return res.status(400).json({ status: 'fail', field: 'employeeCode', message: 'Please enter your employee ID.' });
