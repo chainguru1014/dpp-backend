@@ -354,8 +354,17 @@ exports.signupOtpRequest = async (req: any, res: any, next: any) => {
         if (req.body?.accountType === 'professional') {
             const employee = await findActiveEmployeeByEmail(email, '+otpCode +otpExpiresAt +otpAttempts +otpResendAt');
             if (employee) return await issueOtp(employee, email, res);
-            // Not on any company's staff list yet: verify the email, then
-            // the app's Register Staff Profile page creates the employee.
+            // Not on any company's staff list yet: the email must be at a
+            // domain a company registered (its staff email domain); then the
+            // email is verified and Register Staff Profile creates the employee.
+            const domain = emailDomain(email);
+            if (!domain || !(await Company.exists({ role: { $ne: 'super' }, allowedEmailDomains: domain }))) {
+                return res.status(403).json({
+                    status: 'fail',
+                    code: 'domainNotRegistered',
+                    message: `No company on Yometel uses @${domain || '…'} email addresses. Please register with your work email, or ask your company to add its email domain.`
+                });
+            }
             let signup = await StaffSignup.findOne({ email }).select('+otpCode +otpExpiresAt +otpAttempts +otpResendAt');
             if (!signup) signup = await StaffSignup.create({ email });
             return await issueOtp(signup, email, res);
@@ -893,7 +902,12 @@ exports.faceLogin = async (req: any, res: any, next: any) => {
 // choose on Register Staff Profile (names only).
 exports.staffCompanies = async (req: any, res: any, next: any) => {
     try {
-        const companies = await Company.find({ role: { $ne: 'super' }, name: { $ne: 'admin' } }).select('name').sort({ name: 1 }).lean();
+        const filter: any = { role: { $ne: 'super' }, name: { $ne: 'admin' } };
+        try {
+            const claims: any = req.query?.token ? jwt.verify(String(req.query.token), process.env.JWT_SECRET) : null;
+            if (claims?.purpose === 'staffSignup' && claims.email) filter.allowedEmailDomains = emailDomain(normalizeEmail(claims.email));
+        } catch (e) { /* no filter */ }
+        const companies = await Company.find(filter).select('name').sort({ name: 1 }).lean();
         const Brand = require('../models/brandModel');
         const brands = await Brand.find({ company_id: { $in: companies.map((c: any) => c._id) } }).sort({ createdAt: 1 }).select('company_id name').lean();
         const brandName = new Map<string, string>();
@@ -947,6 +961,10 @@ exports.staffRegister = async (req: any, res: any, next: any) => {
             return res.status(409).json({ status: 'fail', field: 'employeeCode', message: 'This employee ID is already registered. Check it, or ask your Supervisor.' });
         }
         const domains = (company.allowedEmailDomains || []).map((d: string) => String(d).toLowerCase());
+        // The work email must be at one of the chosen company's domains.
+        if (!domains.includes(emailDomain(email))) {
+            return res.status(400).json({ status: 'fail', field: 'company', message: `Your email @${emailDomain(email)} is not registered for ${company.name}. Choose your own company, or ask it to add this email domain.` });
+        }
         if (employeeType === 'supervisor' && domains.length && !domains.includes(emailDomain(email))) {
             return res.status(403).json({ status: 'fail', field: 'role', message: `To register as a Supervisor of ${company.name}, use your work email at ${domains.map((d: string) => '@' + d).join(' or ')}.` });
         }
@@ -984,7 +1002,7 @@ exports.staffLogin = async (req: any, res: any, next: any) => {
                 status: 'fail',
                 code: employee && !employee.passwordHash ? 'noPassword' : 'badLogin',
                 message: employee && !employee.passwordHash
-                    ? 'This account has no password yet. Sign in with an email code, then set one in your profile.'
+                    ? 'This account has no password yet. Press Register below and use this work email to set one.'
                     : 'The email or password is not right.'
             });
         }
