@@ -15,7 +15,26 @@ const BRAND_INFO_KEYS = ['name', 'detail', 'websiteUrl', 'logoUrl', 'coverUrl'];
 const text = (value: any, max = 500) => String(value ?? '').trim().slice(0, max);
 const keyOf = (name: any) => text(name, 120).toLowerCase();
 
-const isPlatformAccount = (company: any) => !company || company.role === 'super' || company.name === 'admin';
+// An uploaded file (bare filename) that is really there. Full URLs and
+// empty values count as present (nothing to check).
+const fs = require('fs');
+const path = require('path');
+// Not on this server: asks the file host /files falls back to. When that
+// can't be asked, the picture is not copied (a broken one would be worse).
+const uploadExists = async (value: string) => {
+    if (!value || /^https?:\/\//i.test(value) || value.includes('/')) return true;
+    try {
+        if (fs.existsSync(path.join(__dirname, '..', 'uploads', path.basename(value)))) return true;
+        const base = process.env.REMOTE_FILES_BASE_URL;
+        if (!base) return false;
+        const res = await fetch(`${base}/${encodeURIComponent(path.basename(value))}`, { method: 'HEAD' });
+        return res.ok;
+    } catch (e) {
+        return false;
+    }
+};
+
+const isPlatformAccount =(company: any) => !company || company.role === 'super' || company.name === 'admin';
 
 // The company's brand: its oldest Brand row (there is normally just one).
 const brandOfCompany = async (companyId: any) => {
@@ -59,10 +78,13 @@ const syncCompanyProducts = async (brand: any) => {
     const company = await Company.findById(brand.company_id).select('name role').lean();
     if (isPlatformAccount(company)) return 0;
     const set: any = {};
-    BRAND_INFO_KEYS.forEach((key) => {
+    for (const key of BRAND_INFO_KEYS) {
         const value = text(brand[key], key === 'detail' ? 1000 : 500);
+        // A logo / cover whose uploaded file is gone would replace a working
+        // picture with a broken one: keep the products' own then.
+        if ((key === 'logoUrl' || key === 'coverUrl') && !(await uploadExists(value))) continue;
         if (value) set[`brandInfo.${key}`] = value;
-    });
+    }
     if (!Object.keys(set).length) return 0;
     // The company's own products, and products the platform account saved
     // under this brand's name (demo products made by the super admin), so a
