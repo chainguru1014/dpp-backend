@@ -64,9 +64,33 @@ const syncCompanyProducts = async (brand: any) => {
         if (value) set[`brandInfo.${key}`] = value;
     });
     if (!Object.keys(set).length) return 0;
-    const r = await Product.updateMany({ company_id: brand.company_id, is_deleted: { $ne: true } }, { $set: set });
+    // The company's own products, and products the platform account saved
+    // under this brand's name (demo products made by the super admin), so a
+    // new logo shows everywhere the brand does.
+    const platformIds = (await Company.find({ $or: [{ role: 'super' }, { name: 'admin' }] }).select('_id').lean()).map((c: any) => c._id);
+    const escaped = text(brand.name, 120).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const nameRe = new RegExp(`^\\s*${escaped}\\s*$`, 'i');
+    const or: any[] = [{ company_id: brand.company_id }];
+    if (platformIds.length && text(brand.name)) or.push({ company_id: { $in: platformIds }, 'brandInfo.name': nameRe });
+    const r = await Product.updateMany({ is_deleted: { $ne: true }, $or: or }, { $set: set });
     return r?.modifiedCount ?? r?.nModified ?? 0;
 };
+
+// The live brand for a saved copy (a followed brand, a favorite's snapshot):
+// matched by website host, else by name. Null when none matches.
+const hostOf = (url: any) => text(url).toLowerCase().replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/\/.*$/, '');
+let brandCache: { at: number; list: any[] } = { at: 0, list: [] };
+const liveBrandFor = async ({ websiteUrl, name }: any) => {
+    if (Date.now() - brandCache.at > 30000) {
+        brandCache = { at: Date.now(), list: await Brand.find({}).select('name nameKey detail tagline websiteUrl logoUrl coverUrl').lean() };
+    }
+    const host = hostOf(websiteUrl);
+    const key = keyOf(name);
+    return (host && brandCache.list.find((b: any) => hostOf(b.websiteUrl) === host))
+        || (key && brandCache.list.find((b: any) => b.nameKey === key))
+        || null;
+};
+const forgetBrandCache = () => { brandCache = { at: 0, list: [] }; };
 
 /**
  * Once at server start: every brand company ends up with exactly one brand.
@@ -124,4 +148,4 @@ const consolidateBrands = async () => {
     return { merged, synced };
 };
 
-module.exports = { brandOfCompany, brandInfoFor, applyCompanyBrand, syncCompanyProducts, consolidateBrands, isPlatformAccount, BRAND_INFO_KEYS };
+module.exports = { brandOfCompany, brandInfoFor, applyCompanyBrand, syncCompanyProducts, consolidateBrands, isPlatformAccount, liveBrandFor, forgetBrandCache, BRAND_INFO_KEYS };

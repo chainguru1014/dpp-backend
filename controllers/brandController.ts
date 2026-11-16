@@ -179,6 +179,7 @@ exports.update = async (req: any, res: any, next: any) => {
         // A brand company: every product shows its brand, so the change
         // reaches all of them (name, description, website, logo, cover).
         const synced = await syncCompanyProducts(updated);
+        require('../utils/brandProfile').forgetBrandCache();
         // The super admin's own brands: products follow a renamed brand.
         if (!synced && set.name && set.name !== previousName) {
             await Product.updateMany(

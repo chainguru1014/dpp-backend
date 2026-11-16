@@ -131,6 +131,19 @@ exports.listFollowedBrands = async (req: any, res: any, next: any) => {
             }
         }));
 
+        // The brand's profile as it is now (a follow row keeps the logo the
+        // brand had when it was followed): the live logo, cover and texts win.
+        const { liveBrandFor } = require('../utils/brandProfile');
+        await Promise.all(docs.map(async (d: any) => {
+            const b = await liveBrandFor({ websiteUrl: d.brandWebsiteUrl, name: d.brandName });
+            if (!b) return;
+            if (b.name) d.brandName = b.name;
+            if (b.logoUrl) d.brandLogoUrl = b.logoUrl;
+            if (b.coverUrl) d.brandCoverUrl = b.coverUrl;
+            if (b.detail) d.brandDetail = b.detail;
+            if (b.tagline) d.brandTagline = b.tagline;
+        }));
+
         return res.status(200).json({ status: 'success', data: docs });
     } catch (error) {
         if (isPoolDestroyedError(error)) {
