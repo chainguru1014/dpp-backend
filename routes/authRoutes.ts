@@ -32,6 +32,9 @@ router.post('/otp/verify', otpVerifyLimiter, AuthController.otpVerify);
 router.post('/staff/login', otpVerifyLimiter, AuthController.staffLogin);
 router.post('/staff/register', otpRequestLimiter, AuthController.staffRegister);
 router.get('/staff/companies', AuthController.staffCompanies);
+// Until publishing: Consumer / Professional sign straight in to a test account
+// (only when PREVIEW_AUTO_LOGIN=on in .env).
+router.post('/preview-login', otpVerifyLimiter, AuthController.previewLogin);
 // Face sign-in (self-hosted CompreFace). Signup creates an account, so it
 // shares the OTP request limiter's tight budget.
 router.post('/face/signup', otpRequestLimiter, AuthController.faceSignup);

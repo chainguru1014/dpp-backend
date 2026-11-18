@@ -1011,3 +1011,38 @@ exports.staffLogin = async (req: any, res: any, next: any) => {
         next(error);
     }
 };
+
+// POST /auth/preview-login {role: 'consumer' | 'staff'} — until the app is
+// published: Consumer / Professional on the Welcome page sign straight in to
+// one fixed test account each, with no sign-in page. Off unless the server's
+// .env has PREVIEW_AUTO_LOGIN=on; remove that line before publishing.
+const PREVIEW_ACCOUNTS: Record<string, string> = {
+    consumer: 'chrisgroenev@gmail.com',
+    staff: 'test@yometel.com',
+};
+exports.previewLogin = async (req: any, res: any, next: any) => {
+    try {
+        if (String(process.env.PREVIEW_AUTO_LOGIN || '').toLowerCase() !== 'on') {
+            return res.status(404).json({ status: 'fail', code: 'previewOff', message: 'Not available.' });
+        }
+        const role = req.body?.role === 'staff' ? 'staff' : 'consumer';
+        const email = PREVIEW_ACCOUNTS[role];
+        if (role === 'staff') {
+            const employee = await findActiveEmployeeByEmail(email);
+            if (!employee) return res.status(404).json({ status: 'fail', code: 'previewMissing', message: 'The test staff account is missing.' });
+            return await sendEmployeeAuthResponse(employee, req, res);
+        }
+        // As sendAuthResponse, without the "new sign-in" email (it would go
+        // out on every app start).
+        const { actorKind, actor, token } = await findOrLinkOrCreateByEmail({ email, provider: 'otp' });
+        return res.status(200).json({
+            status: 'success',
+            token,
+            user: actorKind === 'Company' ? buildCompanyResponse(actor) : buildUserResponse(actor),
+            actorKind,
+            message: 'Login successful'
+        });
+    } catch (error) {
+        next(error);
+    }
+};
