@@ -1012,24 +1012,29 @@ exports.staffLogin = async (req: any, res: any, next: any) => {
     }
 };
 
-// POST /auth/preview-login {role: 'consumer' | 'staff'} — until the app is
-// published: Consumer / Professional on the Welcome page sign straight in to
-// one fixed test account each, with no sign-in page. Off unless the server's
-// .env has PREVIEW_AUTO_LOGIN=on; remove that line before publishing.
+// POST /auth/preview-login {role} — until the product is released, for
+// testing: the app's Welcome (Consumer / Professional) and the admin site's
+// sign-in (Admin / Company Supervisor / Company Employee / Consumer) sign
+// straight in to one fixed test account each, with no sign-in form. Off
+// unless the server's .env has PREVIEW_AUTO_LOGIN=on; remove before release.
 const PREVIEW_ACCOUNTS: Record<string, string> = {
     consumer: 'chrisgroenev@gmail.com',
     staff: 'test@yometel.com',
+    employee: 'test@yometel.com',
+    supervisor: 'koji.wada@yometel.com',
+    admin: 'admin@yometel.com',
 };
+const PREVIEW_STAFF_ROLES = ['staff', 'employee', 'supervisor'];
 exports.previewLogin = async (req: any, res: any, next: any) => {
     try {
         if (String(process.env.PREVIEW_AUTO_LOGIN || '').toLowerCase() !== 'on') {
             return res.status(404).json({ status: 'fail', code: 'previewOff', message: 'Not available.' });
         }
-        const role = req.body?.role === 'staff' ? 'staff' : 'consumer';
+        const role = PREVIEW_ACCOUNTS[req.body?.role] ? req.body.role : 'consumer';
         const email = PREVIEW_ACCOUNTS[role];
-        if (role === 'staff') {
+        if (PREVIEW_STAFF_ROLES.includes(role)) {
             const employee = await findActiveEmployeeByEmail(email);
-            if (!employee) return res.status(404).json({ status: 'fail', code: 'previewMissing', message: 'The test staff account is missing.' });
+            if (!employee) return res.status(404).json({ status: 'fail', code: 'previewMissing', message: `There is no active staff account for ${email} yet.` });
             return await sendEmployeeAuthResponse(employee, req, res);
         }
         // As sendAuthResponse, without the "new sign-in" email (it would go
