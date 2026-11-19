@@ -93,6 +93,14 @@ app.use(xss());
 app.use(hpp());
 
 // Routes
+// Connection warm-up for the app's scanner: the app opens the HTTPS
+// connection before a code is read, so the product lookup after a scan costs
+// one round trip instead of three. No database work, no body.
+app.get('/ping', (req: any, res: any) => {
+  res.set('Cache-Control', 'no-store');
+  res.status(204).end();
+});
+
 app.use('/company', companyRoutes);
 app.use('/upload', uploadRoutes);
 app.use('/qrcode', qrcodeRoutes);
