@@ -1021,8 +1021,8 @@ const PREVIEW_ACCOUNTS: Record<string, string> = {
     consumer: 'chrisgroenev@gmail.com',
     staff: 'test@yometel.com',
     employee: 'test@yometel.com',
-    supervisor: 'koji.wada@yometel.com',
-    admin: 'admin@yometel.com',
+    supervisor: 'admin@yometel.com',
+    admin: 'koji.wada@yometel.com',
 };
 const PREVIEW_STAFF_ROLES = ['staff', 'employee', 'supervisor'];
 exports.previewLogin = async (req: any, res: any, next: any) => {
@@ -1032,6 +1032,15 @@ exports.previewLogin = async (req: any, res: any, next: any) => {
         }
         const role = PREVIEW_ACCOUNTS[req.body?.role] ? req.body.role : 'consumer';
         const email = PREVIEW_ACCOUNTS[role];
+        // Admin: the platform (super) company account itself. Looked up
+        // directly: this email also has a consumer account, which the normal
+        // sign-in would find first.
+        if (role === 'admin') {
+            const company = await Company.findOne({ email });
+            if (!company) return res.status(404).json({ status: 'fail', code: 'previewMissing', message: `There is no admin account for ${email} yet.` });
+            const token = signJwt({ id: company._id, name: company.name, actorKind: 'Company' });
+            return res.status(200).json({ status: 'success', token, user: buildCompanyResponse(company), actorKind: 'Company', message: 'Login successful' });
+        }
         if (PREVIEW_STAFF_ROLES.includes(role)) {
             const employee = await findActiveEmployeeByEmail(email);
             if (!employee) return res.status(404).json({ status: 'fail', code: 'previewMissing', message: `There is no active staff account for ${email} yet.` });
