@@ -221,6 +221,21 @@ exports.getProductsByBrand = async (req: any, res: any, next: any) => {
     }
 };
 
+// Public catalogue for shopper recommendations: products with a price, the
+// fields a product card needs (no internal data).
+exports.getCatalog = async (req: any, res: any, next: any) => {
+    try {
+        const docs = await Product.find({ is_deleted: { $ne: true }, price: { $gt: 0 } })
+            .select('name model detail productType color size itemCategory images price currency brandInfo materialSize.materials detailFacts.material')
+            .sort({ _id: -1 })
+            .limit(80)
+            .lean();
+        return res.status(200).json({ status: 'success', results: docs.length, data: docs });
+    } catch (error) {
+        next(error);
+    }
+};
+
 exports.getProduct = base.getOne(Product);
 
 // Don't update password on this 

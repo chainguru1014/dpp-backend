@@ -14,6 +14,7 @@ router.get('/album/status', EngagementController.getAlbumStatus);
 router.post('/album', EngagementController.addAlbumItem);
 router.delete('/album', EngagementController.removeAlbumItem);
 router.get('/album/list', EngagementController.listAlbumItems);
+router.get('/album/counts', EngagementController.albumCounts); // How many shoppers saved each product
 
 router.get('/cart/status', protect, EngagementController.getCartStatus);
 router.get('/cart', protect, EngagementController.listCartItems);

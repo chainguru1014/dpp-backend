@@ -9,6 +9,7 @@ const { protect, restrictTo } = require('../middleware/authMiddleware');
 router.get('/', ProductController.getAllProducts);
 router.get('/by-user', ProductController.getProductsByUser);
 router.get('/by-brand', ProductController.getProductsByBrand);
+router.get('/catalog', ProductController.getCatalog); // Public: products shoppers can buy (recommendations)
 router.post('/filter', ProductController.getAllProducts);
 router.post('/transfer', ProductController.transfer);
 router.post('/bulk-import', protect, restrictTo('Company', 'Employee'), ProductController.bulkImport);

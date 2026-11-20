@@ -621,3 +621,21 @@ exports.listCartItems = async (req: any, res: any, next: any) => {
         next(error);
     }
 };
+
+
+// How many shoppers saved each product in Favorites: { [productId]: count },
+// plus the total. Used by the admin product cards and dashboard.
+exports.albumCounts = async (req: any, res: any, next: any) => {
+    try {
+        const rows = await AlbumItem.aggregate([
+            { $group: { _id: { p: '$product_id', u: '$user_id' } } },
+            { $group: { _id: '$_id.p', count: { $sum: 1 } } },
+        ]);
+        const data: any = {};
+        let total = 0;
+        rows.forEach((r: any) => { data[String(r._id)] = r.count; total += r.count; });
+        res.status(200).json({ status: 'success', data, total });
+    } catch (error) {
+        next(error);
+    }
+};
