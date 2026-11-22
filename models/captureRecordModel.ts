@@ -110,11 +110,23 @@ const captureRecordSchema = new mongoose.Schema({
     capturedAt: {
         type: Date,
         default: Date.now
+    },
+    // Set by the app (one id per Capture press, kept on retries) so a save
+    // repeated after a lost response returns the first record instead of
+    // creating a second one. Absent on records from older app versions.
+    clientCaptureId: {
+        type: String
     }
 });
 
 captureRecordSchema.index({ company_id: 1, stepIndex: 1, dateKey: 1 });
 captureRecordSchema.index({ employee_id: 1, capturedAt: -1 });
+// Partial: only records that carry an id take part, so the existing records
+// (none have one) cannot conflict when the index is built.
+captureRecordSchema.index(
+    { employee_id: 1, clientCaptureId: 1 },
+    { unique: true, partialFilterExpression: { clientCaptureId: { $type: 'string' } } }
+);
 
 const CaptureRecord = mongoose.model("CaptureRecord", captureRecordSchema);
 module.exports = CaptureRecord;

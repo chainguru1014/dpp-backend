@@ -62,6 +62,20 @@ exports.create = async (req: any, res: any, next: any) => {
         }
 
         const identifierType = ALLOWED_IDENTIFIER_TYPES.includes(req.body?.identifierType) ? req.body.identifierType : 'qr';
+
+        // Idempotent retries: the same press (same clientCaptureId from the
+        // same worker) returns the record already saved, without taking a new
+        // reference number.
+        const clientCaptureId = typeof req.body?.clientCaptureId === 'string'
+            ? req.body.clientCaptureId.trim().slice(0, 64)
+            : '';
+        if (clientCaptureId) {
+            const existing = await CaptureRecord.findOne({ employee_id: employee._id, clientCaptureId });
+            if (existing) {
+                return res.status(200).json({ status: 'success', data: { doc: existing }, duplicate: true });
+            }
+        }
+
         const step = steps[stepIndex];
         const dateKey = dateKeyFor(new Date(), req.body?.tzOffset);
         const refCode = deriveEntityCode(step.entity);
@@ -87,7 +101,10 @@ exports.create = async (req: any, res: any, next: any) => {
 
         const workerLabel = employee.name || employee.employeeCode || (employee.email ? employee.email.split('@')[0] : 'Unknown');
 
-        const doc = await CaptureRecord.create({
+        let doc: any;
+        try {
+            doc = await CaptureRecord.create({
+            ...(clientCaptureId ? { clientCaptureId } : {}),
             company_id: company._id,
             employee_id: employee._id,
             stepIndex,
@@ -107,7 +124,16 @@ exports.create = async (req: any, res: any, next: any) => {
             device,
             terminalId: employee.terminalId || '',
             workerLabel,
-        });
+            });
+        } catch (createError: any) {
+            // Two copies of the same press arrived at once: the unique index
+            // let only one in; answer with that one.
+            if (clientCaptureId && createError?.code === 11000) {
+                const existing = await CaptureRecord.findOne({ employee_id: employee._id, clientCaptureId });
+                if (existing) return res.status(200).json({ status: 'success', data: { doc: existing }, duplicate: true });
+            }
+            throw createError;
+        }
 
         res.status(201).json({
             status: 'success',

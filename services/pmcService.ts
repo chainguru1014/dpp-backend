@@ -4,6 +4,8 @@ const ProductIdentifier = require('../models/productIdentifierModel');
 const AppError = require('../utils/appError');
 const { SOURCE_TYPES } = require('../utils/pmcConstants');
 const { parseGs1 } = require('../utils/gs1');
+const Product = require('../models/productModel');
+const { normalizeProductMedia } = require('../utils/productMedia');
 
 const CODE_ALPHABET = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 
@@ -143,4 +145,27 @@ const lookupProductForIdentifier = async (source_type: string, raw_value: string
     return null;
 };
 
-module.exports = { resolvePmc, generatePmcCode, lookupProductForIdentifier };
+// The product an admin registered for this identifier (barcode, NFC, RFID,
+// GS1 Digital Link), in the public shape the scan endpoints return, with its
+// PMC attached; null when nothing is registered. Shared by pmc/lookup and
+// qrcode/decrypt's identifier fallback so both answer identically.
+const findRegisteredProduct = async (sourceType: string, rawValue: string) => {
+    const mapping = await lookupProductForIdentifier(sourceType, rawValue);
+    if (!mapping) return null;
+    const product = await Product.findById(mapping.product_id);
+    if (!product) return { missingProduct: true };
+    const pmc = await resolvePmc({
+        product_id: mapping.product_id,
+        company_id: mapping.company_id,
+        source_type: sourceType,
+        raw_value: rawValue
+    });
+    return {
+        data: {
+            ...normalizeProductMedia(product?._doc || {}),
+            pmc_code: pmc?.pmc_code || null
+        }
+    };
+};
+
+module.exports = { resolvePmc, generatePmcCode, lookupProductForIdentifier, findRegisteredProduct };

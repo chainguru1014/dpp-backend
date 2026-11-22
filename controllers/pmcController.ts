@@ -2,7 +2,7 @@ const mongoose = require('mongoose');
 const PMC = require('../models/pmcModel');
 const PmcIdentifier = require('../models/pmcIdentifierModel');
 const Product = require('../models/productModel');
-const { resolvePmc, lookupProductForIdentifier } = require('../services/pmcService');
+const { resolvePmc, findRegisteredProduct } = require('../services/pmcService');
 const { normalizeProductMedia } = require('../utils/productMedia');
 const { SOURCE_TYPES } = require('../utils/pmcConstants');
 
@@ -43,32 +43,20 @@ exports.lookup = async (req: any, res: any, next: any) => {
             return res.status(400).json({ status: 'fail', message: 'raw_value is required' });
         }
 
-        const mapping = await lookupProductForIdentifier(source_type, normalizedRawValue);
-        if (!mapping) {
+        const found = await findRegisteredProduct(source_type, normalizedRawValue);
+        if (!found) {
             return res.status(404).json({
                 status: 'fail',
                 message: 'This identifier has not been registered to a product yet'
             });
         }
-
-        const product = await Product.findById(mapping.product_id);
-        if (!product) {
+        if (found.missingProduct) {
             return res.status(404).json({ status: 'fail', message: 'Registered product no longer exists' });
         }
 
-        const pmc = await resolvePmc({
-            product_id: mapping.product_id,
-            company_id: mapping.company_id,
-            source_type,
-            raw_value: normalizedRawValue
-        });
-
         res.status(200).json({
             status: 'success',
-            data: {
-                ...normalizeProductMedia(product?._doc || {}),
-                pmc_code: pmc?.pmc_code || null
-            },
+            data: found.data,
             type: 'Product'
         });
     } catch (error) {

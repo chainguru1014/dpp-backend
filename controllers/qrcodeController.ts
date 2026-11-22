@@ -18,7 +18,7 @@ const mongoose = require('mongoose');
 const { buildPublicProductUrl, buildDigitalLinkUrl, extractProductFromQrUrl } = require('../utils/publicUrl');
 const { parseGs1 } = require('../utils/gs1');
 const { normalizeProductMedia } = require('../utils/productMedia');
-const { resolvePmc } = require('../services/pmcService');
+const { resolvePmc, findRegisteredProduct } = require('../services/pmcService');
 const { geolocateIp, reverseGeocode } = require('../utils/geoLocate');
 
 // Resolve an optional owner scope (owner_kind + owner_id) from a request into a
@@ -71,60 +71,68 @@ const getPublicProductPayload = async (productId: any, qrcodeId: any) => {
     // null) even though a PMC already existed. Keep the raw id for PMC
     // resolution regardless, and look up display fields from whichever
     // collection actually has them.
-    const qrcodeData = await QRcode.findOne({ product_id: productId, qrcode_id: numericQrId });
-    if (!qrcodeData) {
+    //
+    // Every scan of a product QR waits for this, so the independent lookups
+    // run side by side (two rounds instead of up to eight queries one after
+    // another). The result is the same as before.
+    const [qrcodeData, product, serials] = await Promise.all([
+        QRcode.findOne({ product_id: productId, qrcode_id: numericQrId }),
+        Product.findById(productId),
+        Serials.find({ product_id: productId, qrcode_id: numericQrId }),
+    ]);
+    if (!qrcodeData || !product) {
         return null;
     }
     const rawCompanyId = qrcodeData.company_id;
-    const companyDoc = rawCompanyId
-        ? (await Company.findById(rawCompanyId)) || (await User.findById(rawCompanyId))
-        : null;
-
-    const product = await Product.findById(productId);
-    if (!product) {
-        return null;
-    }
-
-    const serials = await Serials.find({ product_id: productId, qrcode_id: numericQrId });
     const normalizedProduct = normalizeProductMedia(product?._doc || {});
+    const scannedQRCode = buildPublicProductUrl(productId, numericQrId);
+
+    const companyLookup = rawCompanyId
+        ? Company.findById(rawCompanyId).then((c: any) => c || User.findById(rawCompanyId))
+        : Promise.resolve(null);
 
     // The brand's tagline lives on its Brand row (not copied onto products):
     // matched by the product's brand name within its company, falling back
     // to the company's own short tagline.
-    if (normalizedProduct.brandInfo) {
-        let tagline = '';
-        const brandKey = String(normalizedProduct.brandInfo.name || '').trim().toLowerCase();
-        const brandCompanyId = product.company_id || rawCompanyId;
-        if (brandKey && brandCompanyId) {
+    const brandKey = String(normalizedProduct.brandInfo?.name || '').trim().toLowerCase();
+    const brandCompanyId = product.company_id || rawCompanyId;
+    const brandTaglineLookup = normalizedProduct.brandInfo && brandKey && brandCompanyId
+        ? (async () => {
             try {
                 const brandDoc = (await Brand.findOne({ company_id: brandCompanyId, nameKey: brandKey }).select('tagline').lean())
                     || (await Brand.findOne({ company_id: brandCompanyId }).sort({ createdAt: 1, _id: 1 }).select('tagline').lean());
-                tagline = String(brandDoc?.tagline || '').trim();
+                return String(brandDoc?.tagline || '').trim();
             } catch (error) {
                 console.error('Brand tagline lookup failed:', error);
+                return '';
             }
-        }
-        if (!tagline) tagline = String(companyDoc?.title || '').trim();
-        normalizedProduct.brandInfo = { ...(normalizedProduct.brandInfo?.toObject?.() || normalizedProduct.brandInfo), tagline };
-    }
-    const scannedQRCode = buildPublicProductUrl(productId, numericQrId);
-    const qrcodeImage = await qrcode.toDataURL(scannedQRCode);
+        })()
+        : Promise.resolve('');
 
     // Every scanned item should resolve to a PMC. Items minted before the PMC
     // feature existed won't have one yet, so resolvePmc() lazily creates it
     // here (find-or-create is idempotent — later scans just return the same one).
-    let pmc_code = null;
-    try {
-        const pmc = await resolvePmc({
-            product_id: productId,
-            company_id: rawCompanyId,
-            qrcode_id: numericQrId,
-            source_type: 'qr',
-            raw_value: scannedQRCode
-        });
-        pmc_code = pmc?.pmc_code || null;
-    } catch (error) {
+    const pmcLookup = resolvePmc({
+        product_id: productId,
+        company_id: rawCompanyId,
+        qrcode_id: numericQrId,
+        source_type: 'qr',
+        raw_value: scannedQRCode
+    }).then((pmc: any) => pmc?.pmc_code || null).catch((error: any) => {
         console.error('PMC resolution failed for scan:', error);
+        return null;
+    });
+
+    const [companyDoc, brandTagline, qrcodeImage, pmc_code] = await Promise.all([
+        companyLookup,
+        brandTaglineLookup,
+        qrcode.toDataURL(scannedQRCode),
+        pmcLookup,
+    ]);
+
+    if (normalizedProduct.brandInfo) {
+        const tagline = brandTagline || String(companyDoc?.title || '').trim();
+        normalizedProduct.brandInfo = { ...(normalizedProduct.brandInfo?.toObject?.() || normalizedProduct.brandInfo), tagline };
     }
 
     return {
@@ -245,7 +253,7 @@ exports.decrypt = async (req: any, res: any, next: any) => {
             });
         }
 
-        console.log(req.body.encryptData);
+        // (Scanned payloads are not logged: they identify items and people.)
         const rawValue = String(req.body.encryptData || '').trim();
 
         // Backward-compatible support:
@@ -267,8 +275,41 @@ exports.decrypt = async (req: any, res: any, next: any) => {
             });
         }
 
-        const data = JSON.parse(decrypt(rawValue));
-        console.log(data);
+        // Opt-in (identifierFallback: true, sent by app versions from
+        // 2026-11-21): a value that is not one of our encrypted codes — a GS1
+        // Digital Link or another company's code — is looked up in the
+        // admin-registered identifiers right here, the same as pmc/lookup.
+        // Saves the app a second round trip (~0.35-1 s from Japan). Without
+        // the flag this endpoint behaves exactly as before.
+        const identifierFallback = req.body?.identifierFallback === true;
+        const identifierLookup = async () => {
+            const raw = String(req.body?.rawValue || rawValue).trim();
+            // The untouched scanned value: the app's encrypted-value clean-up
+            // (- -> +, _ -> /) can garble a URL, so our own item URL / GS1
+            // link is checked again on the original.
+            const ownItem = raw !== rawValue ? await resolveItemFromScan(raw) : null;
+            if (ownItem) {
+                const payload = await getPublicProductPayload(ownItem.productId, ownItem.qrcodeId);
+                if (payload) return res.status(200).json({ status: 'success', data: payload, type: 'Product' });
+            }
+            const found = await findRegisteredProduct('gs1dl', raw);
+            if (found && !found.missingProduct) {
+                return res.status(200).json({ status: 'success', data: found.data, type: 'Product', resolvedAs: 'gs1dl' });
+            }
+            return res.status(404).json({
+                status: 'fail',
+                message: found?.missingProduct ? 'Registered product no longer exists' : 'This identifier has not been registered to a product yet',
+                identifierLookupTried: true
+            });
+        };
+
+        let data: any;
+        try {
+            data = JSON.parse(decrypt(rawValue));
+        } catch (decryptError) {
+            if (identifierFallback) return identifierLookup();
+            throw decryptError;
+        }
 
         if(data.product_id) {
             // Reuse the same resolver the URL-format flow uses (getPublicProductPayload)
@@ -296,7 +337,6 @@ exports.decrypt = async (req: any, res: any, next: any) => {
             }
             company.privateKey = undefined;
             company.password = undefined;
-            console.log(company);
             const qrcodeImage = await qrcode.toDataURL('https://4dveritaspublic.com?qrcode=' + req.body.encryptData);
             
             const resData = {
@@ -311,6 +351,7 @@ exports.decrypt = async (req: any, res: any, next: any) => {
                 type: 'User'
             });
         } else {
+            if (identifierFallback) return identifierLookup();
             return res.status(400).json({
                 status: 'fail',
                 message: 'Invalid decrypted payload'
