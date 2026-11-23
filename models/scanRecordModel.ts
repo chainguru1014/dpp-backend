@@ -74,6 +74,8 @@ const scanRecordSchema = new mongoose.Schema(
 );
 
 scanRecordSchema.index({ encrypt_data: 1, scanned_at: -1 });
+// A shopper's own scans (scan/list: Home, Scan history, AI Concierge).
+scanRecordSchema.index({ user_id: 1, scanned_at: -1 });
 scanRecordSchema.index({ product_id: 1, qrcode_id: 1, scanned_at: -1 });
 
 const ScanRecord = mongoose.model('ScanRecord', scanRecordSchema);

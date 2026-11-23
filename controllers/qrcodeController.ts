@@ -988,10 +988,16 @@ exports.getScannedProducts = async (req: any, res: any, next: any) => {
                 }
             },
             {
+                // Only what the lists show (name, photo, brand, price...):
+                // the whole passports made this answer ~800 KB / ~9 s. A
+                // product page loads its full passport itself.
                 $lookup: {
                     from: 'products',
-                    localField: 'latest.product_id',
-                    foreignField: '_id',
+                    let: { pid: '$latest.product_id' },
+                    pipeline: [
+                        { $match: { $expr: { $eq: ['$_id', '$$pid'] } } },
+                        { $project: { name: 1, model: 1, images: 1, videos: 1, brandInfo: 1, price: 1, currency: 1, productType: 1, color: 1, size: 1, company_id: 1, itemCategory: 1, skuStyleNumber: 1, gtin: 1, is_deleted: 1 } }
+                    ],
                     as: 'product'
                 }
             },
