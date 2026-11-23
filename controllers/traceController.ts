@@ -42,7 +42,10 @@ const placeOf = (loc: any) => ({
     city: loc?.city || '',
     address: loc?.address || '',
     latitude: typeof loc?.latitude === 'number' ? loc.latitude : null,
-    longitude: typeof loc?.longitude === 'number' ? loc.longitude : null
+    longitude: typeof loc?.longitude === 'number' ? loc.longitude : null,
+    // 'gps' (the phone's position) or 'ip' (worked out from the internet
+    // address); staff records carry a GPS accuracy.
+    source: loc?.source || (typeof loc?.accuracy === 'number' ? 'gps' : '')
 });
 
 // Every recorded event for one item (qrcodeId set) or, with qrcodeId null,
