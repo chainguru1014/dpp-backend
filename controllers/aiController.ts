@@ -227,8 +227,10 @@ exports.recommendations = async (req: any, res: any) => {
             })
             .filter(Boolean);
         // Fewer picks than asked for: filled up from the rest of the catalogue.
-        const seen = new Set(ordered.map((p: any) => String(p._id)));
-        const filled = [...ordered, ...products.filter((p: any) => !seen.has(String(p._id)))].slice(0, count);
+        // Each product once (the AI can name one twice), then filled up.
+        const seen = new Set<string>();
+        const unique = ordered.filter((p: any) => { const id = String(p._id); if (seen.has(id)) return false; seen.add(id); return true; });
+        const filled = [...unique, ...products.filter((p: any) => !seen.has(String(p._id)))].slice(0, count);
         const result = filled.map((p: any) => ({
             ...p,
             ai_reason: reasons[String(p._id)] || undefined,
