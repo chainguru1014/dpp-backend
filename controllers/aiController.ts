@@ -150,7 +150,8 @@ exports.recommendations = async (req: any, res: any) => {
         const { ownerId, ownerKind, preferences } = req.body || {};
         // How many picks (the Recommend page asks for 9); products never to
         // pick (the one being looked at, the ones the shopper said no to).
-        const count = Math.max(1, Math.min(12, parseInt(req.body?.count, 10) || 8));
+        // The Recommend page asks for as many as there are (best first).
+        const count = Math.max(1, Math.min(60, parseInt(req.body?.count, 10) || 8));
         const exclude = new Set((Array.isArray(req.body?.excludeIds) ? req.body.excludeIds : []).map(String));
         // A signed-in shopper (user_id): their history is read here and
         // analysed with the product they are looking at (currentProductId).
@@ -194,7 +195,7 @@ exports.recommendations = async (req: any, res: any) => {
                 'You are a merchandising assistant. Given a product catalogue (JSON) and optional shopper ' +
                 'preferences, choose and rank the best products to recommend. Respond ONLY as JSON: ' +
                 '{"ranked":[{"id":"<id>","reason":"<short reason>"}]}. ' +
-                `Include exactly ${count} items when the catalogue has that many, most relevant first. ` +
+                `Rank up to ${count} items (all of them when the catalogue has fewer), the most relevant first. ` +
                 'Analyse the shopper history: "current" is the product they are looking at now, "liked" and "inCart" show what they want, ' +
                 '"scanned" what interested them, "disliked" what to steer away from. Favour products similar in type, style and brand ' +
                 'to current, liked and inCart; avoid ones like disliked. Each reason: one short sentence to the shopper.',
@@ -205,7 +206,7 @@ exports.recommendations = async (req: any, res: any) => {
                 `Shopper history and preferences: ${prefs ? JSON.stringify(prefs) : 'none provided — recommend broadly appealing, high-quality items'}\n\n` +
                 `Catalogue:\n${JSON.stringify(catalogue)}`,
         };
-        const raw = await callOpenAI([system, user], { json: true, max_tokens: 900, temperature: 0.4 });
+        const raw = await callOpenAI([system, user], { json: true, max_tokens: Math.min(3500, 300 + count * 45), temperature: 0.4 });
 
         let ranked: any[] = [];
         try {
