@@ -150,6 +150,19 @@ const productResult = async (product: any, matchedBy: string) => ({
     timeline: await buildTimeline(product, null, null)
 });
 
+// GET /trace/public/lifecycle/:productId (no sign-in)
+exports.publicLifecycle = async (req: any, res: any) => {
+    try {
+        const id = String(req.params.productId || '');
+        if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ status: 'fail', message: 'Invalid product id' });
+        const product = await Product.findOne({ _id: id, is_deleted: { $ne: true } }).select('traceabilityEsg materialSize manufactureDate').lean();
+        if (!product) return res.status(404).json({ status: 'fail', message: 'Product not found' });
+        res.json({ status: 'success', data: await buildProductLifecycle(product) });
+    } catch (err: any) {
+        res.status(500).json({ status: 'error', message: err.message });
+    }
+};
+
 // GET /trace/search?q=
 exports.search = async (req: any, res: any, next: any) => {
     try {

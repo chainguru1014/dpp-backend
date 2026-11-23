@@ -1,6 +1,49 @@
 const fetch = require('node-fetch');
 const mongoose = require('mongoose');
 const Product = require('../models/productModel');
+const ScanRecord = require('../models/scanRecordModel');
+const ProductReaction = require('../models/productReactionModel');
+const CartItem = require('../models/cartItemModel');
+const AlbumItem = require('../models/albumItemModel');
+
+// What a shopper has done, read from the database, for the AI to analyse:
+// what they scanned, liked, disliked and put in the cart, and the product
+// they are looking at now. Each product as "name (type, brand)".
+async function shopperHistory(userId: string, currentProductId?: string) {
+    let uid: any;
+    try {
+        uid = mongoose.Types.ObjectId(String(userId));
+    } catch (e) {
+        return null;
+    }
+    const [scans, reactions, cart, album] = await Promise.all([
+        ScanRecord.find({ user_id: uid, product_id: { $ne: null } }).sort({ scanned_at: -1 }).limit(40).select('product_id').lean().catch(() => []),
+        ProductReaction.find({ user_id: uid }).select('product_id reaction').lean().catch(() => []),
+        CartItem.find({ user_id: uid }).select('product_id').lean().catch(() => []),
+        AlbumItem.find({ user_id: uid }).select('product_id').lean().catch(() => []),
+    ]);
+    const ids = new Set<string>();
+    const add = (list: any[]) => list.forEach((x: any) => x?.product_id && ids.add(String(x.product_id)));
+    [scans, reactions, cart, album].forEach(add);
+    if (currentProductId) ids.add(String(currentProductId));
+    const valid = [...ids].filter((id) => mongoose.Types.ObjectId.isValid(id));
+    const docs = await Product.find({ _id: { $in: valid } }).select('name productType itemCategory brandInfo').lean().catch(() => []);
+    const label: any = {};
+    docs.forEach((p: any) => {
+        const bits = [p.productType || p.itemCategory, p.brandInfo?.name].filter(Boolean).join(', ');
+        label[String(p._id)] = bits ? `${p.name} (${bits})` : p.name;
+    });
+    const names = (list: any[]) => [...new Set(list.map((x: any) => label[String(x.product_id)]).filter(Boolean))].slice(0, 15);
+    const disliked = reactions.filter((r: any) => r.reaction === 'dislike');
+    return {
+        current: currentProductId ? label[String(currentProductId)] || null : null,
+        liked: names([...reactions.filter((r: any) => r.reaction === 'like'), ...album]),
+        disliked: names(disliked),
+        inCart: names(cart),
+        scanned: names(scans),
+        dislikedIds: disliked.map((r: any) => String(r.product_id)),
+    };
+}
 
 // OpenAI is called server-side only — the API key never reaches the client.
 // Configure OPENAI_API_KEY (and optionally OPENAI_MODEL) in the backend env.
@@ -105,6 +148,24 @@ exports.transcribe = async (req: any, res: any) => {
 exports.recommendations = async (req: any, res: any) => {
     try {
         const { ownerId, ownerKind, preferences } = req.body || {};
+        // How many picks (the Recommend page asks for 9); products never to
+        // pick (the one being looked at, the ones the shopper said no to).
+        const count = Math.max(1, Math.min(12, parseInt(req.body?.count, 10) || 8));
+        const exclude = new Set((Array.isArray(req.body?.excludeIds) ? req.body.excludeIds : []).map(String));
+        // A signed-in shopper (user_id): their history is read here and
+        // analysed with the product they are looking at (currentProductId).
+        let prefs = preferences;
+        const userId = req.body?.user_id;
+        const currentProductId = req.body?.currentProductId ? String(req.body.currentProductId) : '';
+        if (userId) {
+            const h = await shopperHistory(String(userId), currentProductId);
+            if (h) {
+                h.dislikedIds.forEach((id: string) => exclude.add(id));
+                const { dislikedIds, ...history } = h;
+                prefs = { ...(preferences || {}), ...history };
+            }
+        }
+        if (currentProductId) exclude.add(currentProductId);
         const filter: any = { is_deleted: false };
         // Brand-scoped recommendations recommend that brand's own catalogue.
         if (ownerKind === 'Company' && ownerId) {
@@ -114,7 +175,7 @@ exports.recommendations = async (req: any, res: any) => {
                 filter.company_id = ownerId;
             }
         }
-        const products = await Product.find(filter).limit(40).lean();
+        const products = (await Product.find(filter).limit(60).lean()).filter((p: any) => !exclude.has(String(p._id)));
         if (!products.length) {
             return res.json({ status: 'success', data: [] });
         }
@@ -123,22 +184,28 @@ exports.recommendations = async (req: any, res: any) => {
             id: String(p._id),
             name: p.name || '',
             model: p.model || '',
-            detail: String(p.detail || '').slice(0, 200),
+            type: p.productType || p.itemCategory || '',
+            brand: p.brandInfo?.name || '',
+            detail: String(p.detail || '').slice(0, 160),
         }));
         const system = {
             role: 'system',
             content:
                 'You are a merchandising assistant. Given a product catalogue (JSON) and optional shopper ' +
                 'preferences, choose and rank the best products to recommend. Respond ONLY as JSON: ' +
-                '{"ranked":[{"id":"<id>","reason":"<short reason>"}]}. Include at most 8 items, most relevant first.',
+                '{"ranked":[{"id":"<id>","reason":"<short reason>"}]}. ' +
+                `Include exactly ${count} items when the catalogue has that many, most relevant first. ` +
+                'Analyse the shopper history: "current" is the product they are looking at now, "liked" and "inCart" show what they want, ' +
+                '"scanned" what interested them, "disliked" what to steer away from. Favour products similar in type, style and brand ' +
+                'to current, liked and inCart; avoid ones like disliked. Each reason: one short sentence to the shopper.',
         };
         const user = {
             role: 'user',
             content:
-                `Preferences: ${preferences ? JSON.stringify(preferences) : 'none provided — recommend broadly appealing, high-quality items'}\n\n` +
+                `Shopper history and preferences: ${prefs ? JSON.stringify(prefs) : 'none provided — recommend broadly appealing, high-quality items'}\n\n` +
                 `Catalogue:\n${JSON.stringify(catalogue)}`,
         };
-        const raw = await callOpenAI([system, user], { json: true, max_tokens: 700, temperature: 0.4 });
+        const raw = await callOpenAI([system, user], { json: true, max_tokens: 900, temperature: 0.4 });
 
         let ranked: any[] = [];
         try {
@@ -159,7 +226,10 @@ exports.recommendations = async (req: any, res: any) => {
                 return byId[id];
             })
             .filter(Boolean);
-        const result = (ordered.length ? ordered : products.slice(0, 8)).map((p: any) => ({
+        // Fewer picks than asked for: filled up from the rest of the catalogue.
+        const seen = new Set(ordered.map((p: any) => String(p._id)));
+        const filled = [...ordered, ...products.filter((p: any) => !seen.has(String(p._id)))].slice(0, count);
+        const result = filled.map((p: any) => ({
             ...p,
             ai_reason: reasons[String(p._id)] || undefined,
         }));
