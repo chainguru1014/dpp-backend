@@ -35,7 +35,17 @@ const productSchema = new mongoose.Schema({
     // Consumer product-facts (Overview / Lifecycle > Details / Product Summary).
     productType: { type: String, default: '' },
     color: { type: String, default: '' },
+    // The colour's swatch (#rrggbb) for the passport's Colors row.
+    colorHex: { type: String, default: '' },
     size: { type: String, default: '' },
+    // Passport Sizes row: each size with how many are in stock — on the
+    // shop floor and in the back store (2026-11-24 client design).
+    sizes: {
+        type: [{ _id: false, label: { type: String, default: '' }, floor: { type: Number, default: 0 }, back: { type: Number, default: 0 } }],
+        default: [],
+    },
+    // The size system the labels use (e.g. "EU"), shown beside "Sizes".
+    sizeSystem: { type: String, default: '' },
     manufactureDate: { type: String, default: '' },
     // Warranty (Product Summary): status label + how many years it stays valid
     // from the date the product was registered.
