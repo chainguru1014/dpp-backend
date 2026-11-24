@@ -1,4 +1,6 @@
 const nodemailer = require('nodemailer');
+const path = require('path');
+const fs = require('fs');
 const mongoose = require('mongoose');
 const FollowedBrand = require('../models/followedBrandModel');
 const AlbumItem = require('../models/albumItemModel');
@@ -484,6 +486,9 @@ exports.sendBrandOrProductEmail = async (req: any, res: any, next: any) => {
         const content = String(req.body?.content || '').trim();
         const html = req.body?.html ? String(req.body.html) : '';
         const attachmentDataUrl = req.body?.attachmentDataUrl ? String(req.body.attachmentDataUrl) : '';
+        // Only a bare upload file name (no paths) is accepted.
+        const imageFileRaw = String(req.body?.imageFile || '').trim();
+        const imageFile = /^[\w.-]+\.(jpe?g|png|webp)$/i.test(imageFileRaw) && !imageFileRaw.startsWith('.') ? imageFileRaw : '';
         if (!toEmail || !content) {
             return res.status(400).json({ status: 'fail', message: 'toEmail and content are required' });
         }
@@ -516,6 +521,25 @@ exports.sendBrandOrProductEmail = async (req: any, res: any, next: any) => {
             mail.html = html
                 ? `${html}<br/><img src="cid:transferqr" alt="QR code" style="width:240px;height:240px"/>`
                 : `<pre style="font-family:inherit">${content}</pre><br/><img src="cid:transferqr" alt="QR code" style="width:240px;height:240px"/>`;
+        } else if (imageFile) {
+            // A product's photo (one of our own uploads, by file name only):
+            // attached inline so mail apps show it without "load images".
+            // The HTML is built here from the plain text — the request body
+            // is XSS-escaped, so client HTML would arrive as visible tags.
+            const file = path.join(__dirname, '..', 'uploads', imageFile);
+            const esc = (v: string) => v.replace(/&(?!(?:amp|lt|gt|quot|#\d+);)/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            const para = (v: string) => `<p style="margin:0 0 14px">${esc(v).split('\n').join('<br/>')}</p>`;
+            const img = fs.existsSync(file)
+                ? '<p style="margin:0 0 14px"><img src="cid:productimage" alt="" width="280" style="width:280px;max-width:100%;height:auto;border-radius:12px;display:block"/></p>'
+                : '';
+            if (img) mail.attachments = [{ filename: imageFile, path: file, cid: 'productimage' }];
+            // The text in paragraphs (split at blank lines), the photo after
+            // the first `imageAt` of them (product: under the sender's note;
+            // brand: under the brand's details, above the note).
+            const parts = content.split(/\n{2,}/);
+            const at = Math.max(0, Math.min(parts.length, Number.parseInt(String(req.body?.imageAt ?? 0), 10) || 0));
+            const body = [...parts.slice(0, at).map(para), img, ...parts.slice(at).map(para)].join('');
+            mail.html = `<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.5;color:#1d2733">${body}</div>`;
         } else if (html) {
             mail.html = html;
         }
