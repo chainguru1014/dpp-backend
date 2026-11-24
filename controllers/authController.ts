@@ -696,6 +696,34 @@ const saveFacePhoto = (b64: string): string | null => {
     }
 };
 
+// POST /auth/avatar { image } — signed in (User or Employee): a picture
+// chosen from the phone's photos (a data URL) becomes the profile picture.
+// (Replaces registering a face as the picture: client request 2026-11-24.)
+exports.setAvatar = async (req: any, res: any, next: any) => {
+    try {
+        const actorKind = req.user?.actorKind;
+        if (actorKind !== 'User' && actorKind !== 'Employee') {
+            return res.status(403).json({ status: 'fail', message: 'Only app accounts have a profile picture' });
+        }
+        const b64 = CompreFace.toBase64Image(req.body?.image);
+        if (!b64) return res.status(400).json({ status: 'fail', message: 'Please choose a picture' });
+        const Model = actorKind === 'Employee' ? Employee : User;
+        const actor = await Model.findById(req.user.id);
+        if (!actor) return res.status(404).json({ status: 'fail', message: 'Account not found' });
+        const filename = saveFacePhoto(b64);
+        if (!filename) return res.status(500).json({ status: 'fail', message: 'The picture could not be saved' });
+        actor.avatar = filename;
+        await actor.save();
+        if (actorKind === 'Employee') {
+            await populateCompany(actor);
+            return res.status(200).json({ status: 'success', actorKind, user: buildEmployeeResponse(actor), avatar: actor.avatar });
+        }
+        return res.status(200).json({ status: 'success', actorKind, user: buildUserResponse(actor), avatar: actor.avatar });
+    } catch (error) {
+        next(error);
+    }
+};
+
 // POST /auth/face/enroll { image } — signed in (User or Employee): register
 // this person's face so they can use Face login, or replace it ("reset my
 // face" from the profile page). The photo becomes their profile picture.

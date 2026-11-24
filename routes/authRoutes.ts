@@ -41,6 +41,7 @@ router.post('/face/signup', otpRequestLimiter, AuthController.faceSignup);
 router.post('/face/login', otpVerifyLimiter, AuthController.faceLogin);
 // Signed in: register (or replace) your face for Face login.
 router.post('/face/enroll', protect, AuthController.faceEnroll);
+router.post('/avatar', protect, AuthController.setAvatar);
 // This device: known? (Start shows Login if so, else the register flow.)
 router.get('/device/:deviceId', AuthController.deviceStatus);
 router.post('/device', protect, AuthController.registerDevice);
