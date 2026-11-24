@@ -4,7 +4,8 @@
 // which product. Both are static files:
 //
 //   GET /labels/p-<productId>.png     the label (1020 x 300, PNG)
-//   GET /labels/index.json            { products: { <id>: { v, n, b, t } },
+//   GET /labels/m-<productId>.jpg     the product's main photo (900 px, JPEG)
+//   GET /labels/index.json            { products: { <id>: { v, n, b, t, m } },
 //                                       gtins: { <gtin>: <id> },
 //                                       codes: { <printed barcode / GS1 link>: <id> } }
 //
@@ -12,6 +13,12 @@
 // QR links carry it; barcodes are looked up in the index) and show the label
 // picture: if it exists, the code is one of ours. No product API call is
 // needed to recognise a code; only pressing Scan / Capture saves a log.
+//
+// The main photo (m-<id>.jpg, version m = hash of the photo's file name,
+// size and date) lets the app show the product page after Scan straight
+// from the code, with no product API call. A new product or a changed first
+// photo gets a new picture and version on the next rebuild. A photo that is
+// a web address (not one of our uploads) is listed as mu instead.
 //
 // Labels are rebuilt shortly after products, brands or registered codes
 // change (model hooks call schedule()), and every 10 minutes as a safety net
@@ -25,6 +32,8 @@ const sharp = require('sharp');
 
 // Bump when the drawing changes: every label is drawn again.
 const DESIGN = 1;
+// Bump when the main photos' size / quality changes.
+const MAIN_DESIGN = 1;
 const W = 1020;
 const H = 300;
 const PAD_X = 54;
@@ -148,7 +157,8 @@ const rebuild = async () => {
         let previous: any = {};
         try { previous = JSON.parse(fs.readFileSync(indexFile, 'utf8')).products || {}; } catch (e) { /* first run */ }
 
-        const products = await Product.find({ is_deleted: { $ne: true } }).select('name brandInfo company_id gtin').lean();
+        const products = await Product.find({ is_deleted: { $ne: true } }).select('name brandInfo company_id gtin images').lean();
+        const uploads = path.join(dir, '..');
         const companyIds = Array.from(new Set(products.map((p: any) => String(p.company_id || '')).filter(Boolean)));
         const [brands, companies, users, identifiers] = await Promise.all([
             Brand.find({ company_id: { $in: companyIds } }).select('company_id nameKey tagline createdAt').sort({ createdAt: 1, _id: 1 }).lean(),
@@ -184,7 +194,27 @@ const rebuild = async () => {
                     continue;
                 }
             }
-            index.products[id] = { v, n: name, b: brand, t: tagline };
+            const entry: any = { v, n: name, b: brand, t: tagline };
+            // The main photo (first image).
+            const first = (Array.isArray(p.images) ? p.images : []).map((x: any) => String(typeof x === 'string' ? x : x?.url || '').trim()).find(Boolean) || '';
+            if (/^https?:\/\//i.test(first)) {
+                entry.mu = first;
+            } else if (first && /^[\w.-]+$/.test(first.replace(/^\/?(files\/)?/, ''))) {
+                const src = path.join(uploads, first.replace(/^\/?(files\/)?/, ''));
+                try {
+                    const st = fs.statSync(src);
+                    const m = crypto.createHash('sha1').update(JSON.stringify([MAIN_DESIGN, first, st.size, st.mtimeMs])).digest('hex').slice(0, 10);
+                    const mainFile = path.join(dir, `m-${id}.jpg`);
+                    if (previous[id]?.m !== m || !fs.existsSync(mainFile)) {
+                        writeAtomic(mainFile, await sharp(src).rotate().resize(900, 1125, { fit: 'inside', withoutEnlargement: true }).jpeg({ quality: 82, mozjpeg: true }).toBuffer());
+                        drawn += 1;
+                    }
+                    entry.m = m;
+                } catch (error) {
+                    // No such file (yet): the app falls back to the product API.
+                }
+            }
+            index.products[id] = entry;
             if (p.gtin) index.gtins[String(p.gtin)] = id;
         }
         identifiers.forEach((it: any) => {
@@ -195,7 +225,7 @@ const rebuild = async () => {
         });
         // Labels of deleted products go (their codes stop being recognised).
         fs.readdirSync(dir).forEach((f: string) => {
-            const m = f.match(/^p-([a-f0-9]{24})\.png$/);
+            const m = f.match(/^[pm]-([a-f0-9]{24})\.(png|jpg)$/);
             if (m && !index.products[m[1]]) fs.unlinkSync(path.join(dir, f));
         });
         writeAtomic(indexFile, JSON.stringify(index));
