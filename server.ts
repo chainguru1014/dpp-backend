@@ -29,6 +29,8 @@ mongoose.connect(process.env.DATABASE,
     });
 mongoose.connection.on('connected', () => {
     console.log('Connected to MongoDB');
+    // Scan labels: first build now, then kept current (services/scanLabels).
+    require('./services/scanLabels').start();
     // Companies registered before company types existed get the default type.
     // Only touches companies without a type, so it is safe on every start.
     const Company = require('./models/companyModel');

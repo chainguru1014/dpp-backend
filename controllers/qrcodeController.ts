@@ -18,7 +18,7 @@ const mongoose = require('mongoose');
 const { buildPublicProductUrl, buildDigitalLinkUrl, extractProductFromQrUrl } = require('../utils/publicUrl');
 const { parseGs1 } = require('../utils/gs1');
 const { normalizeProductMedia } = require('../utils/productMedia');
-const { resolvePmc, findRegisteredProduct } = require('../services/pmcService');
+const { resolvePmc, findRegisteredProduct, lookupProductForIdentifier } = require('../services/pmcService');
 const { geolocateIp, reverseGeocode } = require('../utils/geoLocate');
 
 // Resolve an optional owner scope (owner_kind + owner_id) from a request into a
@@ -436,6 +436,19 @@ exports.recordScan = async (req: any, res: any, next: any) => {
                 }
             } else if (pmcCodeFromClient) {
                 pmc_code = String(pmcCodeFromClient);
+            } else if (['barcode', 'gs1dl', 'nfc', 'rfid'].includes(String(identifier_type))) {
+                // The scan pages now recognise registered codes from the label
+                // index (no lookup first), so the PMC is resolved here instead.
+                const mapping = await lookupProductForIdentifier(String(identifier_type), String(encryptData));
+                if (mapping && String(mapping.product_id) === String(product_id)) {
+                    const pmc = await resolvePmc({
+                        product_id,
+                        company_id: mapping.company_id,
+                        source_type: String(identifier_type),
+                        raw_value: String(encryptData).trim()
+                    });
+                    pmc_code = pmc?.pmc_code || '';
+                }
             }
         } catch (error) {
             console.error('PMC resolution failed for recordScan:', error);

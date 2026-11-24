@@ -49,4 +49,7 @@ productIdentifierSchema.index({ raw_value: 1 }, { unique: true, partialFilterExp
 productIdentifierSchema.index({ gtin: 1 }, { partialFilterExpression: { gtin: { $gt: '' } } });
 productIdentifierSchema.index({ product_id: 1 });
 
+// Scan labels (services/scanLabels) are redrawn after changes here.
+require('../services/scanLabels').watchSchema(productIdentifierSchema);
+
 module.exports = mongoose.model("ProductIdentifier", productIdentifierSchema);

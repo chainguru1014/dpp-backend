@@ -27,4 +27,7 @@ const brandSchema = new mongoose.Schema({
 
 brandSchema.index({ company_id: 1, nameKey: 1 }, { unique: true });
 
+// Scan labels (services/scanLabels) are redrawn after changes here.
+require('../services/scanLabels').watchSchema(brandSchema);
+
 module.exports = mongoose.model("Brand", brandSchema);

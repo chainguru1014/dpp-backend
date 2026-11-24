@@ -316,5 +316,8 @@ const productSchema = new mongoose.Schema({
     }
 }, { timestamps: true });
 
+// Scan labels (services/scanLabels) are redrawn after changes here.
+require('../services/scanLabels').watchSchema(productSchema);
+
 const Product = mongoose.model("Product", productSchema);
 module.exports = Product;

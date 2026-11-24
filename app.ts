@@ -227,6 +227,17 @@ app.get('/files/:filename', async (req: any, res: any, next: any) => {
 
 app.use('/files', express.static(uploadsPath));
 
+// Scan labels (services/scanLabels): the product pictures the scan pages show
+// and the code index. A missing label is a plain fast 404 (= not one of our
+// codes), never fetched from elsewhere. Pictures are requested with ?v=<hash
+// of their text>, so they may be cached for a year; the index is revalidated.
+app.use('/labels', express.static(path.join(uploadsPath, 'labels'), {
+    fallthrough: false,
+    setHeaders: (res: any, filePath: string) => {
+        res.setHeader('Cache-Control', filePath.endsWith('.json') ? 'no-cache' : 'public, max-age=31536000, immutable');
+    },
+}));
+
 //handle undefined Routes
 app.use('*', (req: any, res: any, next: any) => {
     console.log(req.params);
