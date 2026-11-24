@@ -54,7 +54,7 @@ app.set('trust proxy', 1);
 app.use(cors({
     origin: '*', // Allow all origins for development/production
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Cache-Control'],
     credentials: false,
     preflightContinue: false,
     optionsSuccessStatus: 204
