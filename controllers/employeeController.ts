@@ -212,6 +212,10 @@ exports.list = async (req: any, res: any, next: any) => {
             return next(new AppError(403, 'fail', 'Only a Supervisor or company admin may view staff'));
         }
         const filter: any = requester.role === 'super' ? {} : { company_id: requester._id };
+        // Super admin: one company's staff (Employees page, chosen company).
+        if (requester.role === 'super' && req.query?.companyId && /^[a-f0-9]{24}$/i.test(String(req.query.companyId))) {
+            filter.company_id = String(req.query.companyId);
+        }
         // A Supervisor only manages working employees, so other Supervisors
         // (including themselves) never appear in their own roster view.
         if (req.user.actorKind === 'Employee') {

@@ -28,15 +28,21 @@ exports.list = async (req: any, res: any, next: any) => {
         const page = Math.max(1, Number(req.query?.page) || 1);
         const limit = Math.min(100, Number(req.query?.limit) || 50);
 
-        const companyScope = await resolveCompanyScope(req);
+        let companyScope = await resolveCompanyScope(req);
+        // Super admin: one company's sign-ins (Employees page, chosen company).
+        const wanted = String(req.query?.companyId || '');
+        if (companyScope === null && /^[a-f0-9]{24}$/i.test(wanted)) companyScope = wanted;
         const filter: any = {};
 
+        let scopedEmployeeIds: any[] | null = null;
         if (companyScope !== null) {
-            const scopedEmployeeIds = await Employee.find({ company_id: companyScope }).distinct('_id');
+            scopedEmployeeIds = await Employee.find({ company_id: companyScope }).distinct('_id');
             filter.employee_id = { $in: scopedEmployeeIds };
         }
         if (req.query?.employeeId) {
-            filter.employee_id = req.query.employeeId;
+            // Only an employee inside the requester's own scope.
+            const id = String(req.query.employeeId);
+            filter.employee_id = scopedEmployeeIds && !scopedEmployeeIds.some((e: any) => String(e) === id) ? { $in: [] } : id;
         }
 
         const [logs, total] = await Promise.all([
