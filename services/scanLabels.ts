@@ -39,7 +39,7 @@ const DESIGN = 1;
 // Bump when the main photos' size / quality changes.
 const MAIN_DESIGN = 1;
 // Bump when the product card's drawing changes.
-const CARD_DESIGN = 1;
+const CARD_DESIGN = 2;
 const W = 1020;
 const H = 300;
 const PAD_X = 54;
@@ -228,7 +228,13 @@ const drawCard = async (photo: Buffer, brand: string, name: string, facts: { ico
         svg += `<path fill="${color}" ${fact.strong ? `stroke="${color}" stroke-width="0.8" ` : ''}d="${t.line.path(x + 30 + icon + 22, y + CHIP_H / 2 + t.size * 0.36)}"/>`;
     });
     const overlay = `<svg xmlns="http://www.w3.org/2000/svg" width="${CARD_W}" height="${H}" viewBox="0 0 ${CARD_W} ${H}"><title>${escapeXml([brand, name].filter(Boolean).join(' - '))}</title>${svg}</svg>`;
-    const top = await sharp(photo).rotate().resize(CARD_W, CARD_PHOTO_H, { fit: 'cover', position: sharp.strategy.attention }).toBuffer();
+    // Fashion photos are tall with the face near the top: the photo fills
+    // the width and a quarter of what is too tall comes off the top, the rest
+    // off the bottom (a wide photo is cut evenly at the sides).
+    const fitted = await sharp(photo).rotate().resize({ width: CARD_W }).toBuffer({ resolveWithObject: true });
+    const top = fitted.info.height >= CARD_PHOTO_H
+        ? await sharp(fitted.data).extract({ left: 0, top: Math.round((fitted.info.height - CARD_PHOTO_H) * 0.25), width: CARD_W, height: CARD_PHOTO_H }).toBuffer()
+        : await sharp(photo).rotate().resize(CARD_W, CARD_PHOTO_H, { fit: 'cover' }).toBuffer();
     return sharp({ create: { width: CARD_W, height: H, channels: 3, background: '#ffffff' } })
         .composite([{ input: top, top: 0, left: 0 }, { input: Buffer.from(overlay), top: 0, left: 0 }])
         .jpeg({ quality: 84, mozjpeg: true })
