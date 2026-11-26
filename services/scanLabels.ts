@@ -39,7 +39,7 @@ const DESIGN = 1;
 // Bump when the main photos' size / quality changes.
 const MAIN_DESIGN = 1;
 // Bump when the product card's drawing changes.
-const CARD_DESIGN = 2;
+const CARD_DESIGN = 3;
 const W = 1020;
 const H = 300;
 const PAD_X = 54;
@@ -154,11 +154,19 @@ const CHIP_ICONS: Record<string, string> = {
     recycle: '<path d="M7 19H4l3-5"/><path d="M17 19h3l-3-5"/><path d="M9 6l3-3 3 3"/><path d="M8 13l4-7 4 7"/>',
 };
 
+// Short country names, so "Made in UK" fits its card at the size of the
+// other three (app utils/productFacts has the same list).
+const SHORT_COUNTRY: Record<string, string> = {
+    'united kingdom': 'UK', 'united kingdom of great britain and northern ireland': 'UK', 'great britain': 'UK',
+    'united states': 'USA', 'united states of america': 'USA', 'united arab emirates': 'UAE',
+    'czech republic': 'Czechia', 'republic of korea': 'Korea', 'south korea': 'Korea',
+    "people's republic of china": 'China', 'russian federation': 'Russia', 'the netherlands': 'Netherlands',
+};
 const countryOf = (tr: any) => {
     const explicit = String(tr?.originCountry || '').trim();
-    if (explicit) return explicit;
     const parts = String(tr?.madeIn || '').split(',').map((x: string) => x.trim()).filter(Boolean);
-    return parts[parts.length - 1] || '';
+    const c = explicit || parts[parts.length - 1] || '';
+    return SHORT_COUNTRY[c.toLowerCase()] || c;
 };
 
 // "38 kg CO₂e" + "0.56 kg CO₂e" -> "38.6 kg CO₂e" (kilograms only).
@@ -204,14 +212,14 @@ const drawCard = async (photo: Buffer, brand: string, name: string, facts: { ico
     const { sans } = loadFonts();
     const rows = Math.ceil(facts.length / 2);
     const textTop = CARD_PHOTO_H;
-    const kickerBase = textTop + 64;
-    const nameBase = kickerBase + (brand ? 78 : 30);
+    const kickerBase = textTop + 74;
+    const nameBase = kickerBase + (brand ? 80 : 30);
     const chipsTop = nameBase + 46;
     const H = Math.round(chipsTop + rows * CHIP_H + Math.max(0, rows - 1) * CHIP_GAP + CARD_PAD);
     const chipW = (CARD_W - CARD_PAD * 2 - CHIP_GAP) / 2;
     let svg = '';
     if (brand) {
-        const k = fitWidth(sans, brand.toUpperCase(), 28, 0.12, 18, CARD_W - CARD_PAD * 2);
+        const k = fitWidth(sans, brand.toUpperCase(), 40, 0.1, 22, CARD_W - CARD_PAD * 2);
         svg += `<path fill="${SECONDARY}" d="${k.line.path(CARD_PAD, kickerBase)}"/>`;
     }
     const n = fitWidth(sans, name, 54, 0, 30, CARD_W - CARD_PAD * 2);
