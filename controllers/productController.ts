@@ -232,7 +232,15 @@ exports.getCatalog = async (req: any, res: any, next: any) => {
             .sort({ _id: -1 })
             .limit(80)
             .lean();
-        return res.status(200).json({ status: 'success', results: docs.length, data: docs });
+        // How often each product was scanned (the app's "Most scanned" list).
+        const counts = await ScanRecord.aggregate([
+            { $match: { product_id: { $in: docs.map((d: any) => d._id) } } },
+            { $group: { _id: '$product_id', n: { $sum: 1 } } },
+        ]).catch(() => []);
+        const byId: any = {};
+        counts.forEach((c: any) => { byId[String(c._id)] = c.n; });
+        const data = docs.map((d: any) => ({ ...d, scanCount: byId[String(d._id)] || 0 }));
+        return res.status(200).json({ status: 'success', results: data.length, data });
     } catch (error) {
         next(error);
     }
