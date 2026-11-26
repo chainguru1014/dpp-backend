@@ -43,7 +43,7 @@ const MAIN_DESIGN = 1;
 // Bump when the product card's drawing changes.
 const CARD_DESIGN = 5;
 // Bump when the Scan page's brand-and-name picture changes.
-const SCAN_DESIGN = 1;
+const SCAN_DESIGN = 2;
 const SCAN_H = 230;
 const W = 1020;
 const H = 300;
@@ -150,7 +150,7 @@ const drawScanName = async (brand: string, name: string) => {
     }
     if (name) {
         const n = fitLine(sans, name, 76, 0, 36);
-        rows.push({ line: n.line, size: n.size, color: INK, stroke: n.size / 40, gap: brand ? 34 : 0 });
+        rows.push({ line: n.line, size: n.size, color: INK, stroke: 0, gap: brand ? 34 : 0 }); // regular weight (2026-11-26)
     }
     const heights = rows.map((r) => r.size * 0.74);
     const total = heights.reduce((a, h, i) => a + h + rows[i].gap, 0);
