@@ -5,11 +5,13 @@
 //
 //   GET /labels/p-<productId>.png     the label (1020 x 300, PNG)
 //   GET /labels/m-<productId>.jpg     the product's main photo (900 px, JPEG)
-//   GET /labels/c-<productId>.jpg     the product card (900 x 1262, JPEG):
-//                                     the main photo, large, then the brand
-//                                     and the name centred; the app's product
-//                                     page shows only this
-//   GET /labels/index.json            { products: { <id>: { v, n, b, t, m, c } },
+//   GET /labels/c-<productId>.jpg     the product card photo (900 x 1125,
+//                                     JPEG, the main photo cut to 4:5, top
+//                                     kept); the app's product page shows it
+//                                     under the brand and name
+//   GET /labels/s-<productId>.png     brand and name (1020 x 230, PNG) for
+//                                     the shoppers' Scan page, over the camera
+//   GET /labels/index.json            { products: { <id>: { v, n, b, t, m, c, s } },
 //                                       gtins: { <gtin>: <id> },
 //                                       codes: { <printed barcode / GS1 link>: <id> } }
 //
@@ -39,7 +41,10 @@ const DESIGN = 1;
 // Bump when the main photos' size / quality changes.
 const MAIN_DESIGN = 1;
 // Bump when the product card's drawing changes.
-const CARD_DESIGN = 4;
+const CARD_DESIGN = 5;
+// Bump when the Scan page's brand-and-name picture changes.
+const SCAN_DESIGN = 1;
+const SCAN_H = 230;
 const W = 1020;
 const H = 300;
 const PAD_X = 54;
@@ -132,12 +137,41 @@ const drawLabel = async (brand: string, tagline: string, name: string) => {
     return sharp(Buffer.from(svg)).png({ compressionLevel: 9, palette: true }).toBuffer();
 };
 
+// ---- The Scan page's brand and name (client 2026-11-26) ----
+// Over the camera on the shoppers' Scan page, as soon as a code is in the
+// frame: the brand in spaced capitals and the product's name, centred, in
+// the product card's type (white, no frame).
+const drawScanName = async (brand: string, name: string) => {
+    const { sans } = loadFonts();
+    const rows: { line: any; size: number; color: string; stroke: number; gap: number }[] = [];
+    if (brand) {
+        const b = fitLine(sans, brand.toUpperCase(), 46, 0.12, 26);
+        rows.push({ line: b.line, size: b.size, color: SECONDARY, stroke: 0, gap: 0 });
+    }
+    if (name) {
+        const n = fitLine(sans, name, 76, 0, 36);
+        rows.push({ line: n.line, size: n.size, color: INK, stroke: n.size / 40, gap: brand ? 34 : 0 });
+    }
+    const heights = rows.map((r) => r.size * 0.74);
+    const total = heights.reduce((a, h, i) => a + h + rows[i].gap, 0);
+    let y = (SCAN_H - total) / 2;
+    const paths = rows.map((r, i) => {
+        y += r.gap + heights[i];
+        const stroke = r.stroke ? ` stroke="${r.color}" stroke-width="${r.stroke.toFixed(2)}" stroke-linejoin="round"` : '';
+        return `<path fill="${r.color}"${stroke} d="${r.line.path((W - r.line.width) / 2, y)}"/>`;
+    }).join('');
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${SCAN_H}" viewBox="0 0 ${W} ${SCAN_H}">`
+        + `<rect width="${W}" height="${SCAN_H}" fill="#ffffff"/>`
+        + `<title>${escapeXml([brand, name].filter(Boolean).join(' - '))}</title>${paths}</svg>`;
+    return sharp(Buffer.from(svg)).png({ compressionLevel: 9, palette: true }).toBuffer();
+};
+
 // ---- The product card (client design 2026-11-26, "result first") ----
-// The main photo, large, then the brand in spaced capitals and the product's
-// name, both centred (2026-11-26: no fact cards any more; cardFacts stays
-// for other uses). Drawn when a product is saved.
+// The main photo alone, cut to 4:5 with its top kept (the brand and name
+// are drawn by the app above it: client 2026-11-26). cardFacts stays for
+// other uses. Drawn when a product is saved.
 const CARD_W = 900;
-const CARD_PHOTO_H = 1060;
+const CARD_PHOTO_H = 1125;
 const CARD_PAD = 44;
 
 
@@ -195,21 +229,7 @@ const fitWidth = (font: any, text: string, size: number, spacingRatio: number, m
     return { line, size: sz };
 };
 
-const drawCard = async (photo: Buffer, brand: string, name: string) => {
-    const { sans } = loadFonts();
-    const kickerBase = CARD_PHOTO_H + 72;
-    const nameBase = kickerBase + (brand ? 80 : 30);
-    const H = Math.round(nameBase + 50);
-    const centre = (line: any) => (CARD_W - line.width) / 2;
-    let svg = '';
-    if (brand) {
-        const k = fitWidth(sans, brand.toUpperCase(), 40, 0.1, 22, CARD_W - CARD_PAD * 2);
-        svg += `<path fill="${SECONDARY}" d="${k.line.path(centre(k.line), kickerBase)}"/>`;
-    }
-    const n = fitWidth(sans, name, 58, 0, 30, CARD_W - CARD_PAD * 2);
-    // Semibold: the regular outline with a thin stroke of the same colour.
-    svg += `<path fill="${INK}" stroke="${INK}" stroke-width="${(n.size / 40).toFixed(2)}" stroke-linejoin="round" d="${n.line.path(centre(n.line), nameBase)}"/>`;
-    const overlay = `<svg xmlns="http://www.w3.org/2000/svg" width="${CARD_W}" height="${H}" viewBox="0 0 ${CARD_W} ${H}"><title>${escapeXml([brand, name].filter(Boolean).join(' - '))}</title>${svg}</svg>`;
+const drawCard = async (photo: Buffer) => {
     // Fashion photos are tall with the face near the top: the photo fills
     // the width and a quarter of what is too tall comes off the top, the rest
     // off the bottom (a wide photo is cut evenly at the sides).
@@ -217,10 +237,7 @@ const drawCard = async (photo: Buffer, brand: string, name: string) => {
     const top = fitted.info.height >= CARD_PHOTO_H
         ? await sharp(fitted.data).extract({ left: 0, top: Math.round((fitted.info.height - CARD_PHOTO_H) * 0.25), width: CARD_W, height: CARD_PHOTO_H }).toBuffer()
         : await sharp(photo).rotate().resize(CARD_W, CARD_PHOTO_H, { fit: 'cover' }).toBuffer();
-    return sharp({ create: { width: CARD_W, height: H, channels: 3, background: '#ffffff' } })
-        .composite([{ input: top, top: 0, left: 0 }, { input: Buffer.from(overlay), top: 0, left: 0 }])
-        .jpeg({ quality: 84, mozjpeg: true })
-        .toBuffer();
+    return sharp(top).jpeg({ quality: 84, mozjpeg: true }).toBuffer();
 };
 
 const readPhoto = async (first: string, uploads: string) => {
@@ -301,6 +318,18 @@ const rebuild = async () => {
                 }
             }
             const entry: any = { v, n: name, b: brand, t: tagline };
+            // The Scan page's brand and name.
+            const sv = crypto.createHash('sha1').update(JSON.stringify([SCAN_DESIGN, brand, name])).digest('hex').slice(0, 10);
+            const scanFile = path.join(dir, `s-${id}.png`);
+            try {
+                if (previous[id]?.s !== sv || !fs.existsSync(scanFile)) {
+                    writeAtomic(scanFile, await drawScanName(brand, name));
+                    drawn += 1;
+                }
+                entry.s = sv;
+            } catch (error) {
+                console.error(`Scan name picture for ${id} failed:`, error);
+            }
             // The main photo (first image).
             const first = (Array.isArray(p.images) ? p.images : []).map((x: any) => String(typeof x === 'string' ? x : x?.url || '').trim()).find(Boolean) || '';
             if (/^https?:\/\//i.test(first)) {
@@ -322,11 +351,11 @@ const rebuild = async () => {
             }
             // The product card (its own version: photo, words and facts).
             if (first) {
-                const c = crypto.createHash('sha1').update(JSON.stringify([CARD_DESIGN, first, entry.m || '', brand, name])).digest('hex').slice(0, 10);
+                const c = crypto.createHash('sha1').update(JSON.stringify([CARD_DESIGN, first, entry.m || ''])).digest('hex').slice(0, 10);
                 const cardFile = path.join(dir, `c-${id}.jpg`);
                 try {
                     if (previous[id]?.c !== c || !fs.existsSync(cardFile)) {
-                        writeAtomic(cardFile, await drawCard(await readPhoto(first, uploads), brand, name));
+                        writeAtomic(cardFile, await drawCard(await readPhoto(first, uploads)));
                         drawn += 1;
                     }
                     entry.c = c;
@@ -345,7 +374,7 @@ const rebuild = async () => {
         });
         // Labels of deleted products go (their codes stop being recognised).
         fs.readdirSync(dir).forEach((f: string) => {
-            const m = f.match(/^[pmc]-([a-f0-9]{24})\.(png|jpg)$/);
+            const m = f.match(/^[pmcs]-([a-f0-9]{24})\.(png|jpg)$/);
             if (m && !index.products[m[1]]) fs.unlinkSync(path.join(dir, f));
         });
         writeAtomic(indexFile, JSON.stringify(index));
@@ -389,4 +418,4 @@ const watchSchema = (schema: any) => {
     });
 };
 
-module.exports = { rebuild, schedule, start, watchSchema, drawLabel, drawCard, cardFacts, labelsDir };
+module.exports = { rebuild, schedule, start, watchSchema, drawLabel, drawCard, drawScanName, cardFacts, labelsDir };
