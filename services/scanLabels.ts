@@ -5,7 +5,11 @@
 //
 //   GET /labels/p-<productId>.png     the label (1020 x 300, PNG)
 //   GET /labels/m-<productId>.jpg     the product's main photo (900 px, JPEG)
-//   GET /labels/index.json            { products: { <id>: { v, n, b, t, m } },
+//   GET /labels/c-<productId>.jpg     the product card (900 x 1188, JPEG):
+//                                     main photo, brand, name and up to four
+//                                     facts (Genuine, Made in, CO2e, Repairable);
+//                                     the app's product page shows only this
+//   GET /labels/index.json            { products: { <id>: { v, n, b, t, m, c } },
 //                                       gtins: { <gtin>: <id> },
 //                                       codes: { <printed barcode / GS1 link>: <id> } }
 //
@@ -34,6 +38,8 @@ const sharp = require('sharp');
 const DESIGN = 1;
 // Bump when the main photos' size / quality changes.
 const MAIN_DESIGN = 1;
+// Bump when the product card's drawing changes.
+const CARD_DESIGN = 1;
 const W = 1020;
 const H = 300;
 const PAD_X = 54;
@@ -126,6 +132,118 @@ const drawLabel = async (brand: string, tagline: string, name: string) => {
     return sharp(Buffer.from(svg)).png({ compressionLevel: 9, palette: true }).toBuffer();
 };
 
+// ---- The product card (client design 2026-11-26, "result first") ----
+// The main photo on top, then the brand in spaced capitals, the product's
+// name, and its facts as rounded cards two by two: Genuine (every product
+// with our code is a registered original), Made in <country>, its carbon
+// footprint and Repairable / Recyclable. Drawn when a product is saved.
+const CARD_W = 900;
+const CARD_PHOTO_H = 760;
+const CARD_PAD = 44;
+const CHIP_GAP = 22;
+const CHIP_H = 96;
+const CHIP_BG = '#f0f2f5';
+const GENUINE_BG = '#e3edf6';
+
+// Stroke icons on a 24-unit grid.
+const CHIP_ICONS: Record<string, string> = {
+    shield: '<path d="M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6z"/>',
+    pin: '<path d="M12 21s-6-5.5-6-11a6 6 0 0112 0c0 5.5-6 11-6 11z"/><circle cx="12" cy="10" r="2.2"/>',
+    leaf: '<path d="M5 19c0-8 5-13 14-14-1 9-6 14-14 14z"/><path d="M5 19l7-7"/>',
+    pencil: '<path d="M4 20l1-4L16 5l3 3L8 19z"/><path d="M14 7l3 3"/>',
+    recycle: '<path d="M7 19H4l3-5"/><path d="M17 19h3l-3-5"/><path d="M9 6l3-3 3 3"/><path d="M8 13l4-7 4 7"/>',
+};
+
+const countryOf = (tr: any) => {
+    const explicit = String(tr?.originCountry || '').trim();
+    if (explicit) return explicit;
+    const parts = String(tr?.madeIn || '').split(',').map((x: string) => x.trim()).filter(Boolean);
+    return parts[parts.length - 1] || '';
+};
+
+// "38 kg CO₂e" + "0.56 kg CO₂e" -> "38.6 kg CO₂e" (kilograms only).
+const co2Total = (tr: any) => {
+    const vals = [tr?.co2Production, tr?.co2Transportation || tr?.route?.emissions]
+        .map((v: any) => String(v || '').replace(',', '.'))
+        .filter((v: string) => /kg/i.test(v) || /^\s*[\d.]+\s*$/.test(v))
+        .map((v: string) => parseFloat((v.match(/[\d.]+/) || ['NaN'])[0]))
+        .filter((n: number) => Number.isFinite(n));
+    if (!vals.length) return '';
+    const sum = vals.reduce((a: number, b: number) => a + b, 0);
+    const shown = sum >= 100 ? Math.round(sum).toString() : (Math.round(sum * 10) / 10).toString();
+    return `${shown} kg CO₂e`;
+};
+
+const cardFacts = (p: any) => {
+    const { normalizeCircularity } = require('../utils/circularity');
+    const facts: { icon: string; text: string; strong?: boolean }[] = [{ icon: 'shield', text: 'Genuine', strong: true }];
+    const country = countryOf(p.traceabilityEsg);
+    if (country) facts.push({ icon: 'pin', text: `Made in ${country}` });
+    const co2 = co2Total(p.traceabilityEsg);
+    if (co2) facts.push({ icon: 'leaf', text: co2 });
+    const services = normalizeCircularity(p.circularity, p.disposal);
+    // As the app's readyServices: on, and with a way to use it.
+    const ready = (sv: any) => sv.enabled && !!(sv.url || sv.email || sv.phone || sv.acceptRequests || sv.steps.length);
+    if (ready(services.repair)) facts.push({ icon: 'pencil', text: 'Repairable' });
+    else if (ready(services.recycle)) facts.push({ icon: 'recycle', text: 'Recyclable' });
+    return facts;
+};
+
+// Largest size (down to min) at which a line fits maxWidth.
+const fitWidth = (font: any, text: string, size: number, spacingRatio: number, min: number, maxWidth: number) => {
+    let sz = size;
+    let line = textLine(font, text, sz, sz * spacingRatio);
+    while (line.width > maxWidth && sz > min) {
+        sz -= 1;
+        line = textLine(font, text, sz, sz * spacingRatio);
+    }
+    return { line, size: sz };
+};
+
+const drawCard = async (photo: Buffer, brand: string, name: string, facts: { icon: string; text: string; strong?: boolean }[]) => {
+    const { sans } = loadFonts();
+    const rows = Math.ceil(facts.length / 2);
+    const textTop = CARD_PHOTO_H;
+    const kickerBase = textTop + 64;
+    const nameBase = kickerBase + (brand ? 78 : 30);
+    const chipsTop = nameBase + 46;
+    const H = Math.round(chipsTop + rows * CHIP_H + Math.max(0, rows - 1) * CHIP_GAP + CARD_PAD);
+    const chipW = (CARD_W - CARD_PAD * 2 - CHIP_GAP) / 2;
+    let svg = '';
+    if (brand) {
+        const k = fitWidth(sans, brand.toUpperCase(), 28, 0.12, 18, CARD_W - CARD_PAD * 2);
+        svg += `<path fill="${SECONDARY}" d="${k.line.path(CARD_PAD, kickerBase)}"/>`;
+    }
+    const n = fitWidth(sans, name, 54, 0, 30, CARD_W - CARD_PAD * 2);
+    // Semibold: the regular outline with a thin stroke of the same colour.
+    svg += `<path fill="${INK}" stroke="${INK}" stroke-width="${(n.size / 40).toFixed(2)}" stroke-linejoin="round" d="${n.line.path(CARD_PAD, nameBase)}"/>`;
+    facts.forEach((fact, i) => {
+        const x = CARD_PAD + (i % 2) * (chipW + CHIP_GAP);
+        const y = chipsTop + Math.floor(i / 2) * (CHIP_H + CHIP_GAP);
+        const color = fact.strong ? BRAND_BLUE : INK;
+        svg += `<rect x="${x}" y="${y}" width="${chipW}" height="${CHIP_H}" rx="24" fill="${fact.strong ? GENUINE_BG : CHIP_BG}"/>`;
+        const icon = 38;
+        svg += `<g transform="translate(${x + 30} ${y + (CHIP_H - icon) / 2}) scale(${icon / 24})" fill="none" stroke="${color}" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">${CHIP_ICONS[fact.icon] || ''}</g>`;
+        const t = fitWidth(sans, fact.text, 36, 0, 22, chipW - 30 - icon - 22 - 24);
+        svg += `<path fill="${color}" ${fact.strong ? `stroke="${color}" stroke-width="0.8" ` : ''}d="${t.line.path(x + 30 + icon + 22, y + CHIP_H / 2 + t.size * 0.36)}"/>`;
+    });
+    const overlay = `<svg xmlns="http://www.w3.org/2000/svg" width="${CARD_W}" height="${H}" viewBox="0 0 ${CARD_W} ${H}"><title>${escapeXml([brand, name].filter(Boolean).join(' - '))}</title>${svg}</svg>`;
+    const top = await sharp(photo).rotate().resize(CARD_W, CARD_PHOTO_H, { fit: 'cover', position: sharp.strategy.attention }).toBuffer();
+    return sharp({ create: { width: CARD_W, height: H, channels: 3, background: '#ffffff' } })
+        .composite([{ input: top, top: 0, left: 0 }, { input: Buffer.from(overlay), top: 0, left: 0 }])
+        .jpeg({ quality: 84, mozjpeg: true })
+        .toBuffer();
+};
+
+const readPhoto = async (first: string, uploads: string) => {
+    if (/^https?:\/\//i.test(first)) {
+        const r = await fetch(first);
+        if (!r.ok) throw new Error(`photo ${r.status}`);
+        return Buffer.from(await r.arrayBuffer());
+    }
+    return fs.readFileSync(path.join(uploads, first.replace(/^\/?(files\/)?/, '')));
+};
+
 const labelsDir = () => {
     // Served by app.ts from dist/uploads/labels (next to the other uploads).
     const dir = path.join(__dirname, '..', 'uploads', 'labels');
@@ -157,7 +275,7 @@ const rebuild = async () => {
         let previous: any = {};
         try { previous = JSON.parse(fs.readFileSync(indexFile, 'utf8')).products || {}; } catch (e) { /* first run */ }
 
-        const products = await Product.find({ is_deleted: { $ne: true } }).select('name brandInfo company_id gtin images').lean();
+        const products = await Product.find({ is_deleted: { $ne: true } }).select('name brandInfo company_id gtin images traceabilityEsg circularity disposal').lean();
         const uploads = path.join(dir, '..');
         const companyIds = Array.from(new Set(products.map((p: any) => String(p.company_id || '')).filter(Boolean)));
         const [brands, companies, users, identifiers] = await Promise.all([
@@ -214,6 +332,21 @@ const rebuild = async () => {
                     // No such file (yet): the app falls back to the product API.
                 }
             }
+            // The product card (its own version: photo, words and facts).
+            if (first) {
+                const facts = cardFacts(p);
+                const c = crypto.createHash('sha1').update(JSON.stringify([CARD_DESIGN, first, entry.m || '', brand, name, facts])).digest('hex').slice(0, 10);
+                const cardFile = path.join(dir, `c-${id}.jpg`);
+                try {
+                    if (previous[id]?.c !== c || !fs.existsSync(cardFile)) {
+                        writeAtomic(cardFile, await drawCard(await readPhoto(first, uploads), brand, name, facts));
+                        drawn += 1;
+                    }
+                    entry.c = c;
+                } catch (error) {
+                    console.error(`Product card for ${id} failed:`, (error as any)?.message || error);
+                }
+            }
             index.products[id] = entry;
             if (p.gtin) index.gtins[String(p.gtin)] = id;
         }
@@ -225,7 +358,7 @@ const rebuild = async () => {
         });
         // Labels of deleted products go (their codes stop being recognised).
         fs.readdirSync(dir).forEach((f: string) => {
-            const m = f.match(/^[pm]-([a-f0-9]{24})\.(png|jpg)$/);
+            const m = f.match(/^[pmc]-([a-f0-9]{24})\.(png|jpg)$/);
             if (m && !index.products[m[1]]) fs.unlinkSync(path.join(dir, f));
         });
         writeAtomic(indexFile, JSON.stringify(index));
@@ -269,4 +402,4 @@ const watchSchema = (schema: any) => {
     });
 };
 
-module.exports = { rebuild, schedule, start, watchSchema, drawLabel, labelsDir };
+module.exports = { rebuild, schedule, start, watchSchema, drawLabel, drawCard, cardFacts, labelsDir };

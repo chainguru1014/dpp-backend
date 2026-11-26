@@ -137,6 +137,11 @@ const productSchema = new mongoose.Schema({
     // objects: { icon, title, content } plus the optional evidence fields
     // { issuer, number, validUntil (YYYY-MM-DD), fileUrl }.
     certifications: [{ type: mongoose.Schema.Types.Mixed }],
+    // The app's "Documents and certificates" page: the brand's own papers
+    // for this product, each { title, kind, issuer, date (YYYY-MM-DD),
+    // fileUrl, note }. kind is one of: care-guide, safety, composition,
+    // conformity, test-report, warranty, recycling, other.
+    documents: [{ type: mongoose.Schema.Types.Mixed }],
     // Sustainability-impact for the Lifecycle > Dispose tab. Legacy string
     // fields are still read; `items` is the new {icon,value,label,description} list.
     sustainabilityImpact: {
