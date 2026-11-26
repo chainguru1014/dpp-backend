@@ -705,8 +705,35 @@ exports.setAvatar = async (req: any, res: any, next: any) => {
         if (actorKind !== 'User' && actorKind !== 'Employee') {
             return res.status(403).json({ status: 'fail', message: 'Only app accounts have a profile picture' });
         }
-        const b64 = CompreFace.toBase64Image(req.body?.image);
+        let b64 = CompreFace.toBase64Image(req.body?.image);
         if (!b64) return res.status(400).json({ status: 'fail', message: 'Please choose a picture' });
+        // { crop: { x, y, w, h } } (fractions 0..1): the part the person fitted
+        // in the app's round frame, cut here and saved square (600 px).
+        const crop = req.body?.crop;
+        if (crop && [crop.x, crop.y, crop.w, crop.h].every((v: any) => Number.isFinite(Number(v)))) {
+            try {
+                const sharp = require('sharp');
+                const input = Buffer.from(b64, 'base64');
+                const meta = await sharp(input).rotate().metadata();
+                const W = meta.width || 0;
+                const H = meta.height || 0;
+                // rotate() swaps the sides for a sideways (EXIF) photo.
+                const swap = (meta.orientation || 1) >= 5;
+                const iw = swap ? H : W;
+                const ih = swap ? W : H;
+                const clamp01 = (v: any) => Math.min(1, Math.max(0, Number(v)));
+                const left = Math.round(clamp01(crop.x) * iw);
+                const top = Math.round(clamp01(crop.y) * ih);
+                const width = Math.max(1, Math.min(iw - left, Math.round(clamp01(crop.w) * iw)));
+                const height = Math.max(1, Math.min(ih - top, Math.round(clamp01(crop.h) * ih)));
+                if (iw && ih) {
+                    const out = await sharp(input).rotate().extract({ left, top, width, height }).resize(600, 600, { fit: 'cover' }).jpeg({ quality: 86 }).toBuffer();
+                    b64 = out.toString('base64');
+                }
+            } catch (e) {
+                // Could not cut it: the whole picture is saved instead.
+            }
+        }
         const Model = actorKind === 'Employee' ? Employee : User;
         const actor = await Model.findById(req.user.id);
         if (!actor) return res.status(404).json({ status: 'fail', message: 'Account not found' });
