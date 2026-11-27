@@ -55,8 +55,9 @@ exports.create = async (req: any, res: any, next: any) => {
             return next(new AppError(400, 'fail', 'The brand does not take requests for this service.'));
         }
         const message = text(req.body?.message, 1500);
-        if (message.length < 5) {
-            return next(new AppError(400, 'fail', 'Please describe what you need in a few words.'));
+        // At least 10 characters (as the app's form says).
+        if (message.length < 10) {
+            return next(new AppError(400, 'fail', 'Please add a little more detail (at least 10 characters) so the brand can help you.'));
         }
 
         const open = await CircularRequest.countDocuments({
