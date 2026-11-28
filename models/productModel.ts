@@ -125,6 +125,13 @@ const productSchema = new mongoose.Schema({
         default: 'EUR',
         trim: true
     },
+    // The product alone (no person, no background) on a light card, file in
+    // uploads: the app's Categories tiles show it (2026-11-28).
+    cutoutImage: {
+        type: String,
+        default: '',
+        trim: true
+    },
     // Where the consumer Purchase page's Buy button sends the shopper (the
     // brand's own shop page for this item). Falls back to brandInfo.websiteUrl.
     purchaseUrl: {
