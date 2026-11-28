@@ -101,6 +101,8 @@ app.get('/ping', (req: any, res: any) => {
   res.status(204).end();
 });
 
+// The brand's online shop page per product (the app's Online store / View in shop).
+app.get('/shop/:id', require('./controllers/shopController').getShopPage);
 app.use('/company', companyRoutes);
 app.use('/upload', uploadRoutes);
 app.use('/qrcode', qrcodeRoutes);
